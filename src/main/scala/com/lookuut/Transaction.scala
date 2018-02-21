@@ -80,7 +80,7 @@ object Transaction {
 	def parseString (line : String) : scala.collection.immutable.IndexedSeq[Option[String]] = {
 		val row = CSVParser.parse(line,',', '"', '\\')
 		
-		val parsedRow = (0 until 18).map(i => {
+		val parsedRow = (0 until 20).map(i => {
 			if (i < row.size) Some(row(i).trim) else None
 		})
 
@@ -88,7 +88,7 @@ object Transaction {
 	} 
 	
 
-	def parseTrainTransaction(line : String, index : Long) = {
+	def parseTrainTransaction(line : String, index : Long) : TrainTransaction = {
 
 		val parsedRow = parseString(line)
 		val transcation = build(index,
@@ -112,16 +112,16 @@ object Transaction {
 			stringToDouble(parsedRow(8)).getOrElse(0.0), 
 			stringToDouble(parsedRow(9)).getOrElse(0.0)
 		)
-
+		
 		val workPoint = new Point(
 			stringToDouble(parsedRow(16)).getOrElse(0.0), 
 			stringToDouble(parsedRow(17)).getOrElse(0.0)
 		)
 		
-		TrainTransaction(
+		new TrainTransaction(
 			transcation,
-			homePoint,
-			workPoint
+			workPoint,
+			homePoint
 		)
 	}
 
