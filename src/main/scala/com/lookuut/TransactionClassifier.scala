@@ -1,6 +1,6 @@
 package com.lookuut
 
-
+import java.util.Calendar
 import org.apache.spark.sql.Row
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkConf
@@ -15,7 +15,6 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import com.esri.dbscan.DBSCAN2
 import com.esri.dbscan.DBSCANPoint
-import java.io._
 
 import org.apache.spark.mllib.evaluation._
 import org.apache.spark.mllib.tree._
@@ -27,50 +26,29 @@ import scala.reflect.runtime.{universe => ru}
 
 object TransactionClassifier {
 
-	private val scoreRadious = 0.02
-	private val squareScoreRadious = 0.0004
+	val scoreRadious = 0.02
+	val squareScoreRadious = 0.0004
 	private val trainedModelsPath = "/home/lookuut/Projects/raif-competition/resource/models/"
 	private val paramsWidth = 5
 
 	private val featuresCount = 2
-	private val trainDataPart = 1
+	private val trainDataPart = 0.8
 
 
 	def targetPointToIndex (trainTransactions : RDD[(Point, TrainTransaction)], targetPointType : String = "homePoint") : Map[Point, Int] = {
 
-		val points = trainTransactions.
-			map(t => (t._1.getX.toString + t._1.getY.toString, t._2)).
+		trainTransactions.
+			map(t => (t._1.getX.toString + t._1.getY.toString, t._1)).
 			sortBy(_._1).
 			groupByKey.
+			sortByKey().
 			mapValues{case(values) => values.head}.
-			zipWithIndex.
-			map{case((key, t), index) => 
-				val mirror = ru.runtimeMirror(t.getClass.getClassLoader)
-				val shippedTrainedPoint = ru.typeOf[TrainTransaction].decl(ru.TermName(targetPointType)).asTerm
-				val im = mirror.reflect(t)
-				val shippingPointFieldMirror = im.reflectField(shippedTrainedPoint)
-
-				val point = shippingPointFieldMirror.get.asInstanceOf[Point]
-				
-				DBSCANPoint(index, point.getX, point.getY)
-			}.collect()
-
-		val clusteredPoints = DBSCAN2(scoreRadious / 10, 2).
-								cluster(points).
-								map(p => (math.abs(p.clusterID), new Point(p.x, p.y)))
-		val maxClusterID = clusteredPoints.maxBy(_._1)._1 + 1
-
-		val zeroClusterPoints = clusteredPoints.
-			filter(_._1 == 0).
-			zipWithIndex.
+			zipWithUniqueId.
 			map{
-				case((clusterId, point), index) =>
-					(index + maxClusterID, point)
-			}
-
-		(zeroClusterPoints ++ clusteredPoints.filter(_._1 > 0)).
-			map(t => (t._2, t._1)).
-			toMap
+				case((key, t), index) => 
+				(t, index.toInt)
+			}.
+			collect.toMap
 	}
 
 	def transactionToFeatures (transaction : Transaction) : List[Double] = {
@@ -139,7 +117,7 @@ object TransactionClassifier {
 					}
 
 					if (buffer.size > 0) {
-						val lastPos = buffer.size - 1
+						val lastPos = buffer.size
 						for (i <- buffer.size / featuresCount to paramsWidth if i < paramsWidth) {
 							for (j <- 0 to featuresCount - 1) {
 								buffer += buffer(lastPos - (featuresCount - j))
@@ -169,27 +147,27 @@ object TransactionClassifier {
 		val categoricalFeaturesInfo = Map[Int, Int]()
 
 		val evaluations = for (
-								impurity <- Array("gini");
-								depth <- Array(10);
-								bins <- Array(100)
+								impurity <- Array("entropy");
+								depth <- Array(20);
+								bins <- Array(300)
 							) yield {
 								
 								val model = DecisionTree.trainClassifier(
 									trainData, clusteredPoints.valuesIterator.max.toInt + 1, categoricalFeaturesInfo,
 									impurity, depth, bins)
 
-								//val trainAccuracy = getMetrics(model, trainData).precision
-								//val cvAccuracy = getMetrics(model, cvData).precision
-								model.save(sparkContext, trainedModelsPath + f"$targetPointType-$impurity-$depth-$bins")
-
-								//((impurity, depth, bins), (trainAccuracy, cvAccuracy))
+								val trainAccuracy = getMetrics(model, trainData).precision
+								val cvAccuracy = getMetrics(model, cvData).precision
+								model.save(sparkContext, trainedModelsPath + f"$targetPointType-$impurity-$depth-$bins-msk-" + Calendar.getInstance().getTimeInMillis().toString)
+								println(f"======>$impurity, $depth, $bins, $trainAccuracy, $cvAccuracy")
+								((impurity, depth, bins), (trainAccuracy, cvAccuracy))
 							}
 
-		//evaluations.sortBy(_._2).reverse.foreach(println)
+		evaluations.sortBy(_._2).reverse.foreach(println)
 	} 
 
 	def loadDecisionTree (sc : SparkContext, targetPointType : String) : DecisionTreeModel = {
-		DecisionTreeModel.load(sc, trainedModelsPath + targetPointType + "-gini-10-100")
+		DecisionTreeModel.load(sc, trainedModelsPath + targetPointType + "-entropy-20-300")
 	}
 
 	def prediction(
