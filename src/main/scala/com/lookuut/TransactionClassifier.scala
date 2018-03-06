@@ -27,7 +27,8 @@ import scala.reflect.runtime.{universe => ru}
 object TransactionClassifier {
 
 	val scoreRadious = 0.02
-	val squareScoreRadious = 0.0004
+	val squareScoreRadious = scoreRadious * scoreRadious
+	
 	private val trainedModelsPath = "/home/lookuut/Projects/raif-competition/resource/models/"
 	private val paramsWidth = 5
 

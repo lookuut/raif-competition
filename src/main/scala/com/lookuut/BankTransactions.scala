@@ -23,38 +23,6 @@ import java.io._
 
 import org.apache.spark.rdd._
 
-
-class NAStatCounter extends Serializable {
-	val stats: StatCounter = new StatCounter()
-	
-	var missing: Long = 0
-	var empty: Long = 0
-
-	def add(x: Double): NAStatCounter = {
-		if (java.lang.Double.isNaN(x)) {
-			missing += 1
-		} else {
-			stats.merge(x)
-		}
-		this
-	}
-
-	def merge(other: NAStatCounter): NAStatCounter = {
-		stats.merge(other.stats)
-		missing += other.missing
-		empty += other.empty
-		this
-	}
-
-	override def toString = {
-		"stats: " + stats.toString + " NaN: " + missing + " empty: " + empty
-	}
-}
-
-object NAStatCounter extends Serializable {
-	def apply(x: Double) = new NAStatCounter().add(x)
-}
-
 object BankTransactions {
 
 	private val applicationName = "Bank transactions"
@@ -67,7 +35,7 @@ object BankTransactions {
 	private val myTestDataFile = "/home/lookuut/Projects/raif-competition/resource/my_test_set.csv"
 
 	def main(args: Array[String]) {
-		
+
 		val minDist = if (args.size >= 1) args(0).toDouble else 0.0035
 		val minPoint = if (args.size >= 2) args(1).toInt else 2
 		
@@ -95,12 +63,44 @@ object BankTransactions {
 									case (line, index) => 
 										Transaction.parse(line, index)
 									}
-		//trainClassifier(conf, sparkContext, sqlContext)
-		//classifier(conf, sparkContext, sqlContext)
-		TrainTransactionsAnalytics.featurePointIdentify(conf, sparkContext, sqlContext, transactions, trainTransactions, "homePoint")
-		TrainTransactionsAnalytics.featurePointIdentify(conf, sparkContext, sqlContext, transactions, trainTransactions, "workPoint")
-		//trainDataAnalytics(conf, sparkContext, sqlContext)
-		//testEsri
+		TrainTransactionsAnalytics.minPointRelate(conf, sparkContext, sqlContext, transactions, trainTransactions)
+		/*
+		for (equalPercent <- Array(0.8, 0.9, 1.0)) {
+
+			val calculatedHomePointsMap = TrainTransactionsAnalytics.featurePointIdentify(conf, sparkContext, sqlContext, transactions, trainTransactions, "homePoint", equalPercent)
+			val calculatedWorkPointsMap = TrainTransactionsAnalytics.featurePointIdentify(conf, sparkContext, sqlContext, transactions, trainTransactions, "workPoint", equalPercent)
+			
+			val homeResult = TrainTransactionsAnalytics.extendByMaxNearPoints(conf, sparkContext, sqlContext, transactions, trainTransactions, "homePoint", calculatedHomePointsMap)
+			val workResult = TrainTransactionsAnalytics.extendByMaxNearPoints(conf, sparkContext, sqlContext, transactions, trainTransactions, "homePoint", calculatedWorkPointsMap)
+			
+			println("hCount " + 
+					homeResult.size + "/" + 
+					homeResult.filter(t => t._2.getX > 0).size + 
+					" wCount " + 
+					workResult.size + "/" + 
+					workResult.filter(t => t._2.getX > 0).size
+				)
+
+			import sqlContext.implicits._
+
+			val df = transactions.
+				map(t => t.customer_id).
+				distinct.
+				map{
+					case customer_id => 
+						val workPoint = workResult.get(customer_id).getOrElse(new Point(0, 0))
+						val homePoint = homeResult.get(customer_id).getOrElse(new Point(0, 0))
+						(customer_id, workPoint.getX, workPoint.getY, homePoint.getX, homePoint.getY)
+				}.toDF("_ID_", "_WORK_LAT_", "_WORK_LON_", "_HOME_LAT_", "_HOME_LON_").cache()
+			
+			df.coalesce(1).write
+			    .format("com.databricks.spark.csv")
+			    .option("header", "true")
+			    .save("/home/lookuut/Projects/raif-competition/resource/result-" + equalPercent.toString + "-" + Calendar.getInstance().getTimeInMillis().toString)
+
+			   
+		}*/
+		
 	}
 
 	val homePointType = "homePoint"

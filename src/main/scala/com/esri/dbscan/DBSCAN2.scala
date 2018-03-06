@@ -27,7 +27,7 @@ class DBSCAN2(eps: Double, minPoints: Int) extends Serializable {
 
     points.foreach(point => {
       if (!statusMap.contains(point)) {
-        val neighbors = spatialIndex findNeighbors point
+        val neighbors = spatialIndex.findNeighbors(point)
         if (neighbors.length < minPoints) {
           statusMap(point) = DBSCANStatus.NOISE
         } else {

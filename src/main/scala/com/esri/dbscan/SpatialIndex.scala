@@ -49,7 +49,7 @@ case class SpatialIndex(eps: Double) {
     (r - 1 to r + 1).flatMap(i =>
       (c - 1 to c + 1).flatMap(j =>
         grid.getOrElse((i, j), Seq.empty)
-          .filter(point => xmin < point.x && point.x < xmax && ymin < point.y && point.y < ymax)
+          .filter(point => xmin <= point.x && point.x <= xmax && ymin <= point.y && point.y <= ymax)
       )
     )
   }
