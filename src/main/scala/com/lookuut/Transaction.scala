@@ -29,7 +29,11 @@ object Transaction {
 									"MOSCOW", 
 									"MOSCOW REGION",
 									"MOSKOW",
-									"G MOSKVA"
+									"G MOSKVA",
+									"G. MOSKOW",
+									"G. MOSKVA",
+									"*MOSCOW",
+									"77 - MOSCOW"
 								)
 
 	private val piterVarians = Array(
@@ -45,7 +49,9 @@ object Transaction {
 									"SANKT-PETERS",
 									"ST.-PETERSBUR",
 									"SANKT PETERBU",
-									"SPB"
+									"SPB",
+									"G SANKT-PETER",
+									"G. SANKT-PETE"
 								)
 
 
@@ -174,22 +180,27 @@ object Transaction {
 							)
 
 		val transactionPoint = if (terminalPoint.getX > 0.0) terminalPoint else posPoint
+		val operationType = if (posPoint.getX > 0) 0 else 1
+		val cCurrency = if (currency.getOrElse("643.0") == "") 643.0 else currency.getOrElse("643.0").toDouble
+		val amountPower10 = math.pow(10, stringToDouble(amount).getOrElse(0.0))
 
 		new Transaction(
 			id,
 			stringToDouble(amount),
+			amountPower10,
 			atm_address, 
 			terminalPoint, 
 			city, 
 			country,//country
-			currency,//currency
+			cCurrency.toInt,//currency
 			customer_id.getOrElse(""),//customer_id
-			mcc,
+			mcc.getOrElse(""),
 			pos_address,
 			posPoint, 
 			terminal_id,
 			getDate(sDate),
-			transactionPoint
+			transactionPoint,
+			operationType
 		)
 	}
 }
@@ -198,29 +209,21 @@ object Transaction {
 class Transaction(
 		val id : Long,
 		val amount : Option[Double],
+		val amountPower10 : Double,
 		val atm_address : Option[String],
 		val atmPoint : Point,
 		val city : Option[String], 
 		val country : Option[String],
-		val currency : Option[String], 
+		val currency : Int, 
 		val customer_id : String, 
-		val mcc : Option[String],
+		val mcc : String,
 		val pos_address : Option[String],
 		val posPoint : Point,
 		val terminal_id : Option[String],
 		val transactionDate : Option[DateTime],
-		val transactionPoint : Point 
+		val transactionPoint : Point,
+		val operationType : Int
 	) extends Serializable {
 
-	var nearTransactions = Set[Long]()
-
-	def addNearTransactions (id : Long) {
-		nearTransactions += id 
-	}
-
-	def getNearTransactions () : Set[Long] = {
-		nearTransactions
-	}
-
-	override def toString = f"""Transaction([id=$id],[amount=$amount],[atm_address=$atm_address],[atmPoint=$atmPoint],[city=$city],[country=$country],[currency=$currency],[customer_id=$customer_id],[mcc=$mcc],[pos_address=$pos_address],[posPoint=$posPoint],[terminal_id=$terminal_id],[transactionDate=$transactionDate],[transactionPoint=$transactionPoint],[nearTransactions=$nearTransactions])"""
+	override def toString = f"""Transaction([id=$id],[amount=$amount],[atm_address=$atm_address],[atmPoint=$atmPoint],[city=$city],[country=$country],[currency=$currency],[customer_id=$customer_id],[mcc=$mcc],[pos_address=$pos_address],[posPoint=$posPoint],[terminal_id=$terminal_id],[transactionDate=$transactionDate],[transactionPoint=$transactionPoint], [operationType=$operationType])"""
 }

@@ -34,19 +34,6 @@ class DBSCAN2(eps: Double, minPoints: Int) extends Serializable {
           clusterID = expand(point, neighbors, spatialIndex, clusterID)
         }
       }
-      /*
-      statusMap.get(point) match {
-        case None => {
-          val neighbors = spatialIndex findNeighbors point
-          if (neighbors.length < minPoints) {
-            statusMap(point) = DBSCANStatus.NOISE
-          } else {
-            clusterID = expand(point, neighbors, spatialIndex, clusterID)
-          }
-        }
-        case _ => // Do Nothing, point has a status.
-      }
-      */
     })
 
     points

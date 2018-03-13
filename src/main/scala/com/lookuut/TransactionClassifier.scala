@@ -23,6 +23,8 @@ import org.apache.spark.rdd._
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.regression._
 import scala.reflect.runtime.{universe => ru}
+import org.joda.time.DateTime
+
 
 object TransactionClassifier {
 
@@ -30,30 +32,69 @@ object TransactionClassifier {
 	val squareScoreRadious = scoreRadious * scoreRadious
 	
 	private val trainedModelsPath = "/home/lookuut/Projects/raif-competition/resource/models/"
-	private val paramsWidth = 5
+	private val paramsWidth = 1
 
-	private val featuresCount = 2
-	private val trainDataPart = 0.8
+	private val featuresCount = 9
+	private val trainDataPart = 1.0
 
 
-	def targetPointToIndex (trainTransactions : RDD[(Point, TrainTransaction)], targetPointType : String = "homePoint") : Map[Point, Int] = {
+	def targetPointToIndex (
+								trainTransactions : RDD[(Point, TrainTransaction)], 
+								targetPointType : String = "homePoint"
+	) : Map[Point, Int] = {
 
-		trainTransactions.
-			map(t => (t._1.getX.toString + t._1.getY.toString, t._1)).
-			sortBy(_._1).
-			groupByKey.
-			sortByKey().
-			mapValues{case(values) => values.head}.
-			zipWithUniqueId.
-			map{
-				case((key, t), index) => 
-				(t, index.toInt)
-			}.
-			collect.toMap
+		val clusters = DBSCAN2(scoreRadious, 4).
+			cluster(
+				trainTransactions.
+					map(t => (t._1.getX.toString + t._1.getY.toString, t._1)).
+					sortBy(_._1).
+					groupByKey.
+					sortByKey().
+					mapValues{case(values) => values.head}.
+					zipWithUniqueId.
+					map{
+						case((key, t), index) => 
+						DBSCANPoint(index.toInt, t.getX, t.getY)
+					}.
+					collect.
+					toSeq
+			).map(p => (math.abs(p.clusterID), p)) 
+		
+		val clusterStartID = clusters.filter(p => p._1 == 0).size + 1
+		val noises = clusters.filter(p => p._1 == 0).
+						zipWithIndex.map{case ((clusterID, p), index) => (new Point(p.x, p.y), index)}.
+						toMap
+
+		val clusteredPoints = clusters.filter(p => p._1 > 0).
+									map(p => (new Point(p._2.x, p._2.y), p._2.clusterID + clusterStartID)).
+									toMap
+
+		val points = (noises ++ clusteredPoints)
+		println("clusters count " + points.map{case (k,v) => v}.toSet.size + " points count " + points.size)
+		points
 	}
 
-	def transactionToFeatures (transaction : Transaction) : List[Double] = {
-		List(transaction.transactionPoint.getX, transaction.transactionPoint.getY)
+	def transactionToFeatures (t : Transaction) : List[Double] = {
+
+		val point = t.transactionPoint
+		val cityClusterID = TransactionPointCluster.getPointCluster(point).toDouble
+		val countryID = TransactionClassifier.countriesCategories.get(t.country.getOrElse("")).get.toDouble
+		val dayOfWeek = TransactionClassifier.getDateCategory(t.transactionDate.get).toDouble
+		val operationType = t.operationType.toDouble
+		val amount = t.amountPower10
+		val currencyID = TransactionClassifier.currencyCategories.get(t.currency).get.toDouble
+		val mccID = TransactionClassifier.mccCategories.get(t.mcc).get.toDouble
+
+		List(t.transactionPoint.getX, 
+				t.transactionPoint.getY, 
+				countryID, 
+				cityClusterID,
+				dayOfWeek,
+				operationType,
+				amount,
+				currencyID,
+				mccID
+			)
 	}
 
 	def train (conf : SparkConf, 
@@ -68,7 +109,8 @@ object TransactionClassifier {
 				case (t) =>
 					val keyPoint = if (targetPointType == BankTransactions.homePointType) t.homePoint else t.workPoint
 					(keyPoint, t)
-			}.cache
+			}.
+			persist
 
 		val clusteredPoints = targetPointToIndex(indexedByPointTrans, targetPointType)
 
@@ -96,8 +138,8 @@ object TransactionClassifier {
 							(squaredDistance, t)
 						}
 
-					val nearPurposePointTransactions = customerTransactions.
-						filter(t => t._1 <= squareScoreRadious)
+					val nearPurposePointTransactions = customerTransactions
+						.filter(t => t._1 <= 5 * squareScoreRadious)
 					
 					if (nearPurposePointTransactions.size > 0) {
 						scala.util.Random.shuffle(nearPurposePointTransactions).
@@ -143,32 +185,42 @@ object TransactionClassifier {
 		val Array(_trainData, _cvData) = data.randomSplit(Array(trainDataPart, 1 - trainDataPart))
 		val trainData = _trainData.cache() 
 		val cvData = _cvData.cache()
-		// Train a DecisionTree model.
-		//  Empty categoricalFeaturesInfo indicates all features are continuous.
-		val categoricalFeaturesInfo = Map[Int, Int]()
+
+		indexedByPointTrans.unpersist(true)
+
+		val categoricalFeaturesInfo = (
+			for (ii <- 0 to paramsWidth - 1) yield {
+				Map(
+					(ii * featuresCount + 2) -> countriesCategories.size, 
+					(ii * featuresCount + 3) -> TransactionPointCluster.getClustersCount, 
+					(ii * featuresCount + 4) -> dateCategories.size,
+					(ii * featuresCount + 5) -> 2,
+					(ii * featuresCount + 7) -> TransactionClassifier.currencyCategories.size,
+					(ii * featuresCount + 8) -> TransactionClassifier.mccCategories.size
+				)
+			}
+		).flatMap(t => t).toMap 
 
 		val evaluations = for (
-								impurity <- Array("entropy");
+								impurity <- Array("gini");
 								depth <- Array(20);
-								bins <- Array(300)
+								bins <- Array(800)
 							) yield {
-								
 								val model = DecisionTree.trainClassifier(
 									trainData, clusteredPoints.valuesIterator.max.toInt + 1, categoricalFeaturesInfo,
 									impurity, depth, bins)
 
-								val trainAccuracy = getMetrics(model, trainData).precision
-								val cvAccuracy = getMetrics(model, cvData).precision
-								model.save(sparkContext, trainedModelsPath + f"$targetPointType-$impurity-$depth-$bins-msk-" + Calendar.getInstance().getTimeInMillis().toString)
-								println(f"======>$impurity, $depth, $bins, $trainAccuracy, $cvAccuracy")
-								((impurity, depth, bins), (trainAccuracy, cvAccuracy))
+								//val trainAccuracy = getMetrics(model, trainData).accuracy
+								//val cvAccuracy = getMetrics(model, cvData).accuracy
+								model.save(sparkContext, trainedModelsPath + f"$targetPointType-$impurity-$depth-$bins-with-params")
+								//((impurity, depth, bins), (trainAccuracy, cvAccuracy))
 							}
 
-		evaluations.sortBy(_._2).reverse.foreach(println)
+		//evaluations.sortBy(_._2._2).reverse.foreach(println)
 	} 
 
-	def loadDecisionTree (sc : SparkContext, targetPointType : String) : DecisionTreeModel = {
-		DecisionTreeModel.load(sc, trainedModelsPath + targetPointType + "-entropy-20-300")
+	def loadDecisionTree (sc : SparkContext, targetPointType : String, modelName : String) : DecisionTreeModel = {
+		DecisionTreeModel.load(sc, f"$trainedModelsPath$targetPointType-$modelName")
 	}
 
 	def prediction(
@@ -177,47 +229,73 @@ object TransactionClassifier {
 			sqlContext : SQLContext, 
 			toPredictTransactions : RDD[Transaction], 
 			trainTransactions : RDD[(Point, TrainTransaction)],
-			targetPointType : String = "homePoint"
+			targetPointType : String = "homePoint",
+			modelName : String
 		) : Map[String, Point] = {
 
-		val model = loadDecisionTree(sparkContext, targetPointType)
+
+		val customersPoints = toPredictTransactions.
+			map(t => (t.customer_id, t.transactionPoint)).
+			groupByKey.
+			collectAsMap
+
+		val model = loadDecisionTree(sparkContext, targetPointType, modelName)
 		val zippedTransactionsPoints = prepareTestData(conf, sparkContext, sqlContext, toPredictTransactions).
 										collect
 
-		val indexToPoint = targetPointToIndex(trainTransactions, targetPointType).map(t => (t._2, t._1)).toMap
+		val clusterIDToPoint = targetPointToIndex(trainTransactions, targetPointType).
+								groupBy(_._2).toMap
 
 		zippedTransactionsPoints.
 			map{
 				case(customer_id, features) => 
-					val predictedPointIndex = model.predict(Vectors.dense(features.toArray))
-					val point = indexToPoint.get(predictedPointIndex.toInt)
-					(customer_id, point)
+					val clusterID = model.predict(Vectors.dense(features.toArray)).toInt
+					(customer_id, clusterID)
 			}.
 			groupBy(_._1).
 			map{
-				case (customer_id, groupedPoints) =>
-					groupedPoints.
-						map(p => (p._2.get.getX.toString + p._2.get.getY.toString, p._2.get)).
+				case (customer_id, groupedClusters) =>
+					val clusterID = groupedClusters.
+						map(p => (p._2, 1)).
 						groupBy(_._1).
 						map {
-							case (pointStr, p) => 
-								(customer_id, p.head._2, p.size)
-						}.maxBy(_._3)
+							case (p, rows) => 
+								(p, rows.size)
+						}.
+						maxBy(_._2)._1
+
+					val cluster = clusterIDToPoint.get(clusterID).get
+					val points = customersPoints.get(customer_id).get
+
+
+					val inClusterPoints = points.filter {
+						case p => 
+							val inClusterPointCount = cluster.
+								filter(clusterPoint => TrainTransactionsAnalytics.distance(clusterPoint._1, p) <= scoreRadious).
+								size
+							inClusterPointCount > 0	
+					} 
+					
+					val maxNearPoints = inClusterPoints.map {
+							case point => 
+								val nearCount = inClusterPoints.filter(p => p != point).filter {
+									case p => 
+										TrainTransactionsAnalytics.distance(point, p) <= scoreRadious
+								}.size
+								(point , nearCount)
+						}
+
+					(
+						customer_id , 
+						if (maxNearPoints.size > 0) maxNearPoints.maxBy(_._2)._1 else new Point(0,0)
+					)
 			}.
 			map(t => (t._1, t._2)).
 			toMap
 	}
 	
 	def prepareTestData (conf : SparkConf, sparkContext : SparkContext, sqlContext : SQLContext, transactions : RDD[Transaction]) : RDD[(String,Seq[Double])] = {
-		transactions.
-			map{case (t) => 
-				var features = ListBuffer[Double]()
-				for (i <- 0 to paramsWidth) {
-					features ++= transactionToFeatures(t)
-				}
-				(t.customer_id, features.toSeq)
-			}.cache
-		/*
+
 		transactions.
 			map(t => (t.customer_id, t)).
 			groupByKey.
@@ -234,39 +312,59 @@ object TransactionClassifier {
 							case(index, t) => 
 								DBSCANPoint(index, t.transactionPoint.getX, t.transactionPoint.getY)
 						}
+					val minPointCount = if (points.size >= 4) 4 else points.size
 
-					val clusteredPoints = DBSCAN2(scoreRadious / 2, 2).
+					val clusteredPoints = DBSCAN2(scoreRadious, minPointCount).
 											cluster(points).
 											map(p => (math.abs(p.clusterID), p))
-					val maxClusterID = clusteredPoints.maxBy(_._1)._1 + 1
 
-					val zeroClusterPoints = clusteredPoints.
-						filter(_._1 == 0).
-						zipWithIndex.
-						map{
-							case((clusterId, point), index) =>
-								(index + maxClusterID, point)
-						}
+					val cPoints =  						
+					{
+						if (clusteredPoints.filter(p => p._1 > 0).size > 0) 
+							clusteredPoints.filter(p => p._1 > 0)
+						else 
+							clusteredPoints
+					}						
 
-					val testData = (zeroClusterPoints ++ clusteredPoints.filter(_._1 > 0)).
-						map(t => (t._1, t._2)).
+					cPoints.
 						groupBy(_._1).
-						mapValues{
-							case points => 
-								(points.size, points)
-						}.
-						map {
-							case (clusterId, (pointCount, clusterPoints)) => 
-								val transactions = clusterPoints.
-									map(p => (pointsToTrans(p._2.id.toInt)))
+						map{
+							case (clusterID, clusterPoints) =>
+								var data = ListBuffer[Seq[Double]]()
+								var buffer = ListBuffer[Double]()
+								var index = 0
 								
-								pointsToVector(transactions)
+								val clusterTransactions = clusterPoints.map(t => pointsToTrans(t._2.id.toInt))
+								if (clusterPoints.size > 0) {
+									clusterTransactions.
+										foreach {
+											case (t) =>
+												buffer ++= transactionToFeatures(t)
+												index += 1
+
+												if (index >= paramsWidth) {
+													data += buffer.toSeq
+													buffer = ListBuffer[Double]()
+													index = 0
+												}
+										}
+								}
+
+								if (buffer.size > 0) {
+									val lastPos = buffer.size
+									for (i <- buffer.size / featuresCount to paramsWidth if i < paramsWidth) {
+										for (j <- 0 to featuresCount - 1) {
+											buffer += buffer(lastPos - (featuresCount - j))
+										}
+									}	
+									data += buffer.toSeq
+								}
+							data.toSeq
 						}.
 						flatten
-					testData
 			}.
 			flatMap{case (customer_id, transactions) => transactions.map((customer_id, _))}.
-			cache*/
+			cache
 	}
 	
 	def getMetrics(model: DecisionTreeModel, data: RDD[LabeledPoint]) : MulticlassMetrics = {
@@ -277,40 +375,66 @@ object TransactionClassifier {
 	}
 
 
-	def pointsToVector(transactions : Iterable[Transaction]) : Seq[Seq[Double]] = {
-		var data = ListBuffer[Seq[Double]]()
-		var buffer = ListBuffer[Double]()
-		var index = 0
+	val dateCategories = scala.collection.Map(0 -> 0, 1 -> 1, 2 -> 2, 3 -> 3, 4 -> 4, 5 -> 5, 6 -> 6)
 
-		scala.util.Random.shuffle(transactions).
-			foreach {
-				case (t) =>
-					val point = t.transactionPoint
-					buffer += point.getX
-					buffer += point.getY
-					buffer += t.amount.get
-					buffer += (if (t.atmPoint.getX > 0) 1 else 0).toDouble
-					index += 1
-
-					if (index >= paramsWidth) {
-						data += buffer.toSeq
-						buffer = ListBuffer[Double]()
-						index = 0
-					}
-			}
-	
-		if (buffer.size > 0) {
-			val lastPos = buffer.size
-			for (i <- buffer.size / 4 to paramsWidth if i < paramsWidth) {
-				buffer += buffer(lastPos - 4)
-				buffer += buffer(lastPos - 3)
-				buffer += buffer(lastPos - 2)
-				buffer += buffer(lastPos - 1)
-			}	
-			data += buffer.toSeq
-		}
-		
-		data.toSeq
+	def getDateCategory (date : DateTime) : Int = {
+		date.getDayOfWeek - 1
 	}
 
+	var countriesCategories = scala.collection.Map[String, Long]()
+
+	def getCountriesCategories (transactions : RDD[Transaction], trainTransactions : RDD[TrainTransaction]) : scala.collection.Map[String, Long] = {
+		if (countriesCategories.size == 0) {
+			countriesCategories = trainTransactions.
+				map(t => t.transaction.country.getOrElse("")).
+				union(
+					transactions.map(t => t.country.getOrElse(""))
+				).
+				distinct.
+				sortBy(t => t).
+				zipWithIndex.
+				map{case (country, index) => (country, index)}.
+				collectAsMap
+		}
+		
+		countriesCategories
+	}
+
+	var currencyCategories = scala.collection.Map[Int, Long]()
+
+	def getCurrencyCategories (transactions : RDD[Transaction], trainTransactions : RDD[TrainTransaction]) : scala.collection.Map[Int, Long] = {
+		if (currencyCategories.size == 0) {
+			currencyCategories = trainTransactions.
+				map(t => t.transaction.currency).
+				union(
+					transactions.map(t => t.currency)
+				).
+				distinct.
+				sortBy(t => t).
+				zipWithIndex.
+				map{case (currency, index) => (currency, index)}.
+				collectAsMap
+		}
+		
+		currencyCategories
+	}
+
+	var mccCategories = scala.collection.Map[String, Long]()
+
+	def getMccCategories (transactions : RDD[Transaction], trainTransactions : RDD[TrainTransaction]) : scala.collection.Map[String, Long] = {
+		if (mccCategories.size == 0) {
+			mccCategories = trainTransactions.
+				map(t => t.transaction.mcc).
+				union(
+					transactions.map(t => t.mcc)
+				).
+				distinct.
+				sortBy(t => t).
+				zipWithIndex.
+				map{case (currency, index) => (currency, index)}.
+				collectAsMap
+		}
+		
+		mccCategories
+	}
 }
