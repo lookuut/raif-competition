@@ -252,35 +252,8 @@ object BankTransactions {
 		//binaryModelClassification(sparkContext, sqlContext, trainTransactions, transactions)
 
 		
-		/*
-				val homeSummary = Statistics.
-							colStats(stat.map(t => t._2).filter(t => t(0) == 1.0))
-
-				println(homeSummary.mean)
-				println(homeSummary.min)
-				println(homeSummary.max)
-				println(homeSummary.count)
-				
-				val farFromHomeSummary = Statistics.
-								colStats(stat.map(t => t._2).filter(t => t(0) == 0.0))
-
-				println(farFromHomeSummary.mean)
-				println(farFromHomeSummary.min)
-				println(farFromHomeSummary.max)
-				println(farFromHomeSummary.count)	*/	
-
 		return	
-		/*
-					val maxByPointCount = clusters.
-											maxBy(t => t(2)) 
-					val maxByDuration = clusters.
-											maxBy(t => t(3))
-
-					if (maxByPointCount(0) == 1 || maxByDuration(0) == 1) 
-						1
-					 else 
-						0*/
-
+		
 		/*trainClassifier(conf, sparkContext, sqlContext, trainTransactions)
 
 		return
@@ -412,14 +385,15 @@ object BankTransactions {
 								sqlContext : SQLContext, 
 								transactions: RDD[Transaction],
 								trainTransactions: RDD[TrainTransaction]) {
+		val trainAnalytics = TrainTransactionsAnalytics(sparkContext)
 		for (
 			pointEqualPercent <- Array(0.7, 0.9, 1.0);
 			minPointEqualCount <- Array(3, 4)
 		) yield {
 		
 			println(f"============> params $pointEqualPercent $minPointEqualCount")
-			val calculatedHomePointsMap = TrainTransactionsAnalytics.featurePointIdentify(conf, sparkContext, sqlContext, transactions, trainTransactions, "homePoint", 0.9, pointEqualPercent, minPointEqualCount)
-			val calculatedWorkPointsMap = TrainTransactionsAnalytics.featurePointIdentify(conf, sparkContext, sqlContext, transactions, trainTransactions, "workPoint", 0.9, pointEqualPercent, minPointEqualCount)
+			val calculatedHomePointsMap = trainAnalytics.featurePointIdentify(transactions, trainTransactions, "homePoint", 0.9, pointEqualPercent, minPointEqualCount)
+			val calculatedWorkPointsMap = trainAnalytics.featurePointIdentify(transactions, trainTransactions, "workPoint", 0.9, pointEqualPercent, minPointEqualCount)
 
 			val transactionMap = transactions.map(t => (t.customer_id, t)).groupByKey.collectAsMap
 

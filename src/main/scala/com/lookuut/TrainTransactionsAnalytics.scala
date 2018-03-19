@@ -50,7 +50,7 @@ object TrainTransactionsAnalytics {
 
 class TrainTransactionsAnalytics(private val sparkContext : SparkContext) {
 
-	def featurePointIdentify (conf : SparkConf, sparkContext : SparkContext, sqlContext : SQLContext, transactions : RDD[Transaction],
+	def featurePointIdentify (transactions : RDD[Transaction],
 								trainTransactions : RDD[TrainTransaction],
 								column : String,
 								equalPercent : Double,
