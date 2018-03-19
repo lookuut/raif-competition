@@ -1,34 +1,25 @@
 package com.lookuut
 
-import java.nio.file.{Paths, Files}
-import java.util.Calendar
-import java.time.LocalDateTime
-
 import org.apache.spark.sql.Row
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
-import java.util.Date
+
 import com.esri.core.geometry._
 
-import org.apache.spark.util.StatCounter
-
-import scala.collection.mutable.ListBuffer
-import org.joda.time.DateTimeConstants
 import org.apache.spark.storage.StorageLevel
-import scala.util.{Try,Success,Failure}
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
-import com.esri.dbscan.DBSCAN2
-import com.esri.dbscan.DBSCANPoint
-import java.io._
 
 import org.apache.spark.rdd._
 
-object Visualization {
+class Visualization(private val sparkContext : SparkContext) {
 
-	private val moscowCartesianCenter = new Point(55.752818, 37.621754)
+	val moscowCartesianCenter = new Point(55.752818, 37.621754)
+
+	private val jsonResultFile = "/home/lookuut/Projects/raif-competition/resource/result/dbscan/json/"
+	private val csvResultFile = "/home/lookuut/Projects/raif-competition/resource/result/dbscan/csv"
+
 
 	def cartesianToPolar(point : Point, cartesianCenter : Point) = {
 		val cartesianPoint = new Point(point.getX - cartesianCenter.getX, 
@@ -42,76 +33,24 @@ object Visualization {
 		(distance, angle)
 	}
 	
-	private val jsonResultFile = "/home/lookuut/Projects/raif-competition/resource/result/dbscan/json"
-	private val csvResultFile = "/home/lookuut/Projects/raif-competition/resource/result/dbscan/csv"
+	def customerPoints (customerId : String, customerTransactions : scala.collection.Map[Point, (String, String)]) {
 
-	def dbscan(minDist : Double, minPoint : Int) = {
-		/*
-		val points = testDataRaw.
-			filter(!_.contains("amount,atm_address,")).
-			map{//Test data transactions
-				case (line) => 
-					val t = Transaction.parse(line, 0)
-				(t.transactionPoint.getX.toString + t.transactionPoint.getY.toString, t.transactionPoint)
-			}.union(
-				parsedTrainData.
-					map(t =>
-							(
-								t.transaction.transactionPoint.getX.toString +
-							 		t.transaction.transactionPoint.getY.toString, 
-						 		t.transaction.transactionPoint
-						 	)
-					)
-			).union(
-				parsedTrainData.
-					map(t =>
-							(
-								t.workPoint.getX.toString +
-									t.workPoint.getY.toString, 
-						 		t.workPoint
-						 	)
-						)
-			).union(
-				parsedTrainData.
-					map(t => 
-							(
-								t.homePoint.getX.toString +
-							 		t.homePoint.getY.toString, 
-						 		t.homePoint
-							)
-						)
-			).
-			groupByKey.
-			mapValues{case(values) => values.head}.
-			zipWithIndex.
-			map{case((key, point), index) => 
-				DBSCANPoint(index, point.getX, point.getY)
-			}.collect()
-
-		val clusteredPoints = DBSCAN2(minDist, minPoint).
-								cluster(points).
-								map(p => (math.abs(p.clusterID), p.x, p.y)).
-								toSeq.
-								sortWith(_._1 > _._1)		
-		
-		sparkContext.
-			parallelize(clusteredPoints).
-			toDF("cluster", "latitude", "longtitude").
-			coalesce(1).
-			write.
-		    format("com.databricks.spark.csv").
-		    option("header", "true").
-		    save(csvResultFile)
-
-
-	    val header = ("""{"type": "FeatureCollection","features": [""")
+		val header = ("""{"type": "FeatureCollection","features": [""")
 	    val bottom = ("""{"type": "Feature","id": -1, "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},"options": {"preset": "islands#blueIcon"}}]}""")
 
-	    val data = clusteredPoints.
+	    val data = customerTransactions.
 	      zipWithIndex.
 	    map{
-	    	case(p, index) =>  
-	    		f"""{"type": "Feature","id": $index, "geometry": {"type": "Point", "coordinates": [""" + p._2 + """, """ + p._3 + """]}, "properties" :{ "hintContent" : "Cluster """ + p._1 + """"}, "options": {"preset": """" + colors(p._1  % 10)  + """"}},"""
+	    	case((p, label), index) =>  
+	    		f"""{
+	    				"type": "Feature",
+	    				"id": ${index}, 
+	    				"geometry": {
+	    					"type": "Point", 
+	    					"coordinates": [""" + p.getX + """, """ + p.getY + """]}, 
+	    					"properties" :{ "hintContent" : """" + label._1 + """"}, 
+	    					"options": {"preset": """" + label._2 + """"}
+	    				},"""
 		}.toSeq
 
 		val withHeader = (header +: data) :+ bottom 
@@ -119,7 +58,7 @@ object Visualization {
 		sparkContext.
 			parallelize(withHeader).
 			coalesce(1).
-		    saveAsTextFile(jsonResultFile)*/
+		    saveAsTextFile(jsonResultFile + customerId)
 	}
 
 	private val colors = Array(

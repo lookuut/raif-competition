@@ -183,6 +183,7 @@ object Transaction {
 		val operationType = if (posPoint.getX > 0) 0 else 1
 		val cCurrency = if (currency.getOrElse("643.0") == "") 643.0 else currency.getOrElse("643.0").toDouble
 		val amountPower10 = math.pow(10, stringToDouble(amount).getOrElse(0.0))
+		val mccInt = mcc.getOrElse("0").replace(",","").replace("\"", "").toInt
 
 		new Transaction(
 			id,
@@ -194,7 +195,7 @@ object Transaction {
 			country,//country
 			cCurrency.toInt,//currency
 			customer_id.getOrElse(""),//customer_id
-			mcc.getOrElse(""),
+			mccInt,
 			pos_address,
 			posPoint, 
 			terminal_id,
@@ -216,14 +217,14 @@ class Transaction(
 		val country : Option[String],
 		val currency : Int, 
 		val customer_id : String, 
-		val mcc : String,
+		val mcc : Int,
 		val pos_address : Option[String],
 		val posPoint : Point,
 		val terminal_id : Option[String],
-		val transactionDate : Option[DateTime],
+		val date : Option[DateTime],
 		val transactionPoint : Point,
 		val operationType : Int
 	) extends Serializable {
 
-	override def toString = f"""Transaction([id=$id],[amount=$amount],[atm_address=$atm_address],[atmPoint=$atmPoint],[city=$city],[country=$country],[currency=$currency],[customer_id=$customer_id],[mcc=$mcc],[pos_address=$pos_address],[posPoint=$posPoint],[terminal_id=$terminal_id],[transactionDate=$transactionDate],[transactionPoint=$transactionPoint], [operationType=$operationType])"""
+	override def toString = f"""Transaction([id=$id],[amount=$amount],[atm_address=$atm_address],[atmPoint=$atmPoint],[city=$city],[country=$country],[currency=$currency],[customer_id=$customer_id],[mcc=$mcc],[pos_address=$pos_address],[posPoint=$posPoint],[terminal_id=$terminal_id],[date=$date],[transactionPoint=$transactionPoint], [operationType=$operationType])"""
 }

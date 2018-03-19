@@ -25,30 +25,64 @@ import org.joda.time.DateTime
 
 
 object TransactionRegressor {
+	def transactionVector(t : Transaction, ratio : Double) : Array[Double] = {
+		val point = t.transactionPoint
+		val cityClusterID = TransactionPointCluster.getPointCluster(t.transactionPoint).toDouble
+		val countryID = TransactionClassifier.countriesCategories.get(t.country.getOrElse("")).get.toDouble
+		val dayOfWeek = TransactionClassifier.getDateCategory(t.date.get).toDouble
+		val operationType = t.operationType.toDouble
+		val amount = t.amountPower10
+		val currencyID = TransactionClassifier.currencyCategories.get(t.currency).get.toDouble
+		val mcc = TransactionClassifier.mccCategories.get(t.mcc).get.toDouble
+
+		Array(
+			amount,
+			currencyID, 
+			cityClusterID, 
+			countryID, 
+			mcc,
+			dayOfWeek, 
+			operationType, 
+			ratio
+		)
+	}
+}
+
+class TransactionRegressor(private val sparkContext : SparkContext) {
 
 	private val trainedModelsPath = "/home/lookuut/Projects/raif-competition/resource/models/"
-	private val trainDataPart = 0.8
-	
-	def train (conf : SparkConf, 
-				sparkContext : SparkContext, 
-				sqlContext : SQLContext, 
-				trainTransactions : RDD[(TrainTransaction)],
-				column : String = "homePoint"
-			) {
+	private val trainDataPart = 1.0
 
-		val data = trainTransactions.map{
-				case t => 
-					val point = t.transaction.transactionPoint
-					val cityClusterID = TransactionPointCluster.getPointCluster(point).toDouble
-					val countryID = TransactionClassifier.countriesCategories.get(t.transaction.country.getOrElse("")).get.toDouble
-					val dayOfWeek = TransactionClassifier.getDateCategory(t.transaction.transactionDate.get).toDouble
-					val operationType = t.transaction.operationType.toDouble
-					val isHome = TrainTransactionsAnalytics.distance(point, t.homePoint) <= TransactionClassifier.scoreRadious
-					val isWork = TrainTransactionsAnalytics.distance(point, t.workPoint) <= TransactionClassifier.scoreRadious
-					val amount = t.transaction.amountPower10
-					val currencyID = TransactionClassifier.currencyCategories.get(t.transaction.currency).get.toDouble
-					(Array(cityClusterID, countryID, dayOfWeek, operationType, amount, currencyID, point.getX, point.getY), isHome, isWork)
-			}.map{
+
+	def prepareTrainData (trainTransactions : RDD[(TrainTransaction)],
+				column : String = "homePoint"
+			) : RDD[LabeledPoint] = {
+
+		trainTransactions.
+			filter(t => (if (column == "homePoint") t.homePoint else t.workPoint).getX > 0).
+			map(t => (t.transaction.customer_id, t)).
+			groupByKey.
+			map{
+				case (customer_id, customerTransactions) => 
+					customerTransactions.
+					map(t => (t.transaction.transactionPoint ,t )).
+					groupBy(_._1).
+					map{
+						case (transactionPoint, pointTransactions) =>
+							pointTransactions.map {
+								case tt => 
+									val t = tt._2
+									val point = t.transaction.transactionPoint
+									val isHome = TrainTransactionsAnalytics.distance(point, t.homePoint) <= TransactionClassifier.scoreRadious
+									val isWork = TrainTransactionsAnalytics.distance(point, t.workPoint) <= TransactionClassifier.scoreRadious
+									val ratio = pointTransactions.size.toDouble / customerTransactions.size
+									
+									(TransactionRegressor.transactionVector(t.transaction, ratio), isHome, isWork)
+							}
+					}.flatMap(t => t)					
+			}.
+			flatMap(t => t).
+			map{
 				case t => 
 					val purpose = if (column == "homePoint") t._2 else t._3
 					LabeledPoint(
@@ -58,73 +92,111 @@ object TransactionRegressor {
 						)
 					)
 			}
-									
+	}
 
-		val categoricalFeaturesInfo = Map(
-					0 -> TransactionPointCluster.getClustersCount, 
-					1 -> TransactionClassifier.countriesCategories.size, 
-					2 -> TransactionClassifier.dateCategories.size,
-					3 -> 3,
-					5 -> TransactionClassifier.currencyCategories.size
-				)
+	def categoricalFeaturesInfo () : Map[Int, Int] = {
+		Map(
+			1 -> TransactionClassifier.currencyCategories.size,
+			2 -> TransactionPointCluster.getClustersCount, 
+			3 -> TransactionClassifier.countriesCategories.size, 
+			4 -> TransactionClassifier.mccCategories.size,
+			5 -> TransactionClassifier.dateCategories.size,
+			6 -> 2
+		)
+	}
+
+	def train (trainTransactions : RDD[(TrainTransaction)],
+				column : String = "homePoint"
+			) : RandomForestModel = {
+		val data = prepareTrainData(trainTransactions, column)
+
+		val model = RandomForest.trainClassifier(
+									data, 2, categoricalFeaturesInfo,
+									20, "auto",
+									"gini", 5, 1000)
 		
+		model.save(sparkContext, trainedModelsPath + f"$column-gini-10-1000-with-params-binary")
+		return model
+	} 
+
+	def generateModel(trainTransactions : RDD[TrainTransaction], 
+						transactions : RDD[Transaction],
+						column : String = "homePoint",
+						trainDataPart : Double = 1.0) {
+		
+		val data = prepareTrainData(trainTransactions, column)
+		val testData = prepareTestData(transactions)
+		
+		data.take(100).foreach(println)
+		println("Train transaction count " + data.count)
+		println("Test transaction count " + testData.count)
+		testData.take(100).foreach(println)
+		/*
 		val Array(_trainData, _cvData) = data.randomSplit(Array(trainDataPart, 1 - trainDataPart))
+		
 		val trainData = _trainData.cache() 
 		val cvData = _cvData.cache()
 
 		val evaluations = for (
-								impurity <- Array("gini");
-								depth <- Array(20);
-								bins <- Array(1000)
+								impurity <- Array("gini", "entropy");
+								depth <- Array(5, 7, 10);
+								bins <- Array(800, 1000)
 							) yield {
-								println("-------------------->Goto train")
-								
 								val model = DecisionTree.trainClassifier(
 									trainData, 2, categoricalFeaturesInfo,
 									impurity, depth, bins)
-								
-								println("-------------------->Train is ended")
 
 								val trainAccuracy = getMetrics(model, trainData).accuracy
 								val cvAccuracy = getMetrics(model, cvData).accuracy
-								
-								if (trainDataPart >= 1.0)
-									model.save(sparkContext, trainedModelsPath + f"$column-$impurity-$depth-$bins-with-params-binary")
-								
-								((impurity, depth, bins), (trainAccuracy, cvAccuracy))
+								val predictedCustomerCount = prediction(testData, column, model).size
+								((impurity, depth, bins), (trainAccuracy, cvAccuracy, predictedCustomerCount))
 							}
 
-		evaluations.sortBy(_._2._2).reverse.foreach(println)
-	} 
+		evaluations.sortBy(_._2._2).reverse.foreach(println)*/
+	}	
 
 	def loadDecisionTree (sc : SparkContext, targetPointType : String, modelName : String) : DecisionTreeModel = {
 		DecisionTreeModel.load(sc, f"$trainedModelsPath$targetPointType-$modelName")
 	}
 
+
+	def prepareTestData (transactions : RDD[Transaction]
+			) : RDD[(String, (Point, org.apache.spark.mllib.linalg.Vector))] = {
+
+		transactions.
+			map(t => (t.customer_id, t)).
+			groupByKey.
+			map{
+				case (customer_id, customerTransactions) => 
+					val trans = customerTransactions.
+						map(t => (t.transactionPoint , t)).
+						groupBy(_._1).
+						map{
+							case (transactionPoint, pointTransactions) =>
+								pointTransactions.map {
+									case tt => 
+										val t = tt._2
+										val ratio = pointTransactions.size.toDouble / customerTransactions.size
+										
+										(t.transactionPoint, Vectors.dense(TransactionRegressor.transactionVector(t, ratio)))
+								}
+						}.
+						flatMap(t => t)
+
+					(customer_id, trans)
+			}.
+			map(t => t._2.map(tt => (t._1, tt))).
+			flatMap(t => t)
+	}
+
 	def prediction(
-			conf : SparkConf, 
-			sparkContext : SparkContext, 
-			sqlContext : SQLContext, 
-			toPredictTransactions : RDD[Transaction], 
+			toPredictTransactions : RDD[(String, (Point, org.apache.spark.mllib.linalg.Vector))], 
 			targetPointType : String = "homePoint",
-			modelName : String
+			model : DecisionTreeModel
 		) : scala.collection.Map[String, Point] = {
 		
-		val model = loadDecisionTree(sparkContext, targetPointType, modelName)
-
-		val prediction = toPredictTransactions.map{
-				case t => 
-					val point = t.transactionPoint
-					val cityClusterID = TransactionPointCluster.getPointCluster(point).toDouble
-					val countryID = TransactionClassifier.countriesCategories.get(t.country.getOrElse("")).get.toDouble
-					val dayOfWeek = TransactionClassifier.getDateCategory(t.transactionDate.get).toDouble
-					val operationType = t.operationType.toDouble
-					val amount = t.amountPower10
-					val currencyID = TransactionClassifier.currencyCategories.get(t.currency).get.toDouble
-
-					val isPurpose = model.predict(Vectors.dense(Array(cityClusterID, countryID, dayOfWeek, operationType, amount, currencyID, point.getX, point.getY))).toInt
-					(t.customer_id, point, isPurpose)
-			}.
+		val prediction = toPredictTransactions.
+			map(t=> (t._1, t._2._1, model.predict(t._2._2))).
 			filter(t => t._3 == 1).
 			map(t => (t._1, t._2)).
 			groupByKey.

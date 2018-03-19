@@ -1,5 +1,6 @@
 package com.lookuut
 
+import com.lookuut.utils.RichPoint
 import java.nio.file.{Paths, Files}
 import java.util.Calendar
 import java.time.LocalDateTime
@@ -12,6 +13,8 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
 import java.util.Date
 import com.esri.core.geometry._
+import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
 
 import org.apache.spark.util.StatCounter
 
@@ -21,7 +24,14 @@ import com.esri.dbscan.DBSCAN2
 import com.esri.dbscan.DBSCANPoint
 import java.io._
 
+import org.joda.time.DateTime
+import org.joda.time.Duration
+import org.joda.time.Months
+import org.joda.time.Days
+
 import org.apache.spark.rdd._
+import scala.util.Try
+import org.joda.time.format.DateTimeFormat
 
 object BankTransactions {
 
@@ -33,6 +43,180 @@ object BankTransactions {
 	private val smallTestDataFile = "/home/lookuut/Projects/raif-competition/resource/small_test_set.csv"
 	private val smallTrainDataFile = "/home/lookuut/Projects/raif-competition/resource/small_train_set.csv"
 	private val myTestDataFile = "/home/lookuut/Projects/raif-competition/resource/my_test_set.csv"
+
+
+	def binaryModelClassification (sparkContext : SparkContext, 
+										sqlContext : SQLContext,
+										trainTransactions : RDD[TrainTransaction], 
+										transactions : RDD[Transaction]) {
+
+		TransactionPointCluster.clustering(transactions, trainTransactions)							
+		TransactionClassifier.getCountriesCategories(transactions, trainTransactions)
+		TransactionClassifier.getCurrencyCategories(transactions, trainTransactions)
+		TransactionClassifier.getMccCategories(transactions, trainTransactions)
+		
+		val regressor = new TransactionRegressor(sparkContext)
+		
+		regressor.generateModel(trainTransactions, transactions, "homePoint", 0.7)
+		//regressor.generateModel(trainTransactions, transactions, "workPoint", 0.7)
+
+		/*
+		val homePointModel = regressor.train(trainTransactions, "homePoint")
+		val workPointModel = regressor.train(trainTransactions, "workPoint")
+
+		val predictedHomePoints = regressor.prediction(
+						transactions,
+						"homePoint",
+						homePointModel
+					)
+
+		val predictedWorkPoints = regressor.prediction(
+						transactions,
+						"workPoint",
+						workPointModel
+					)
+
+		val result = transactions.
+						map(t => t.customer_id).
+						distinct.
+						map{
+							case customer_id => 
+								val workPoint = predictedWorkPoints.get(customer_id).getOrElse(new Point(0.0, 0.0))
+								val homePoint = predictedHomePoints.get(customer_id).getOrElse(new Point(0.0, 0.0))
+								(customer_id, workPoint.getX, workPoint.getY, homePoint.getX, homePoint.getY)
+						}
+		
+		println(f"result count ${result.count} home points count ${result.filter(_._2 > 0).count} and ${result.filter(_._4 > 0).count}")
+
+		import sqlContext.implicits._
+
+		val df = result.toDF("_ID_", "_WORK_LAT_", "_WORK_LON_", "_HOME_LAT_", "_HOME_LON_").cache()
+		
+		df.take(20).foreach(println)
+
+		df.coalesce(1).write
+		    .format("com.databricks.spark.csv")
+		    .option("header", "true")
+		    .save(f"/home/lookuut/Projects/raif-competition/resource/binary-gini-10-1000") */
+	}
+
+	private val aroundHomeMCCCodes = List(3011, 3047, 5169, 5933, 7211)
+	private val farFromHomeMCCCodes = List(763,
+										 1731,
+										 1750,
+										 1761,
+										 2842,
+										 3351,
+										 3501,
+										 3503,
+										 3504,
+										 3509,
+										 3512,
+										 3530,
+										 3533,
+										 3543,
+										 3553,
+										 3579,
+										 3586,
+										 3604,
+										 3634,
+										 3640,
+										 3642,
+										 3649,
+										 3665,
+										 3692,
+										 3750,
+										 3778,
+										 4112,
+										 4119,
+										 4121,
+										 4131,
+										 4215,
+										 4225,
+										 4411,
+										 4457,
+										 4511,
+										 4582,
+										 4722,
+										 4784,
+										 4789,
+										 4814,
+										 4816,
+										 5044,
+										 5046,
+										 5051,
+										 5065,
+										 5085,
+										 5094,
+										 5131,
+										 5137,
+										 5139,
+										 5193,
+										 5198,
+										 5199,
+										 5231,
+										 5261,
+										 5271,
+										 5309,
+										 5511,
+										 5521,
+										 5531,
+										 5551,
+										 5561,
+										 5571,
+										 5599,
+										 5712,
+										 5713,
+										 5718,
+										 5733,
+										 5734,
+										 5735,
+										 5813,
+										 5816,
+										 5947,
+										 5963,
+										 5965,
+										 5969,
+										 5970,
+										 5971,
+										 5994,
+										 5996,
+										 5997,
+										 5998,
+										 6010,
+										 7011,
+										 7012,
+										 7261,
+										 7296,
+										 7299,
+										 7333,
+										 7338,
+										 7393,
+										 7394,
+										 7399,
+										 7512,
+										 7523,
+										 7531,
+										 7535,
+										 7622,
+										 7922,
+										 7929,
+										 7991,
+										 7992,
+										 7996,
+										 7998,
+										 7999,
+										 8042,
+										 8062,
+										 8211,
+										 8244,
+										 8249,
+										 8351,
+										 8911,
+										 9211,
+										 9222,
+										 9311,
+										 9399)
 
 	def main(args: Array[String]) {
 		
@@ -51,8 +235,9 @@ object BankTransactions {
 									case (line, index) => 
 										Transaction.parseTrainTransaction(line, index)
 									}.
-									filter(t => !t.transaction.transactionDate.isEmpty)
-
+									filter(t => t.transaction.transactionPoint.getX > 0).
+									filter(t => !t.transaction.date.isEmpty)
+		
 		val transactions = sparkContext.
 									textFile(testDataFile).
 									filter(!_.contains("amount,atm_address,")).
@@ -61,21 +246,41 @@ object BankTransactions {
 									case (line, index) => 
 										Transaction.parse(line, index)
 									}.
-									filter(t => !t.transactionDate.isEmpty)
-
-		TrainTransactionsAnalytics.districts(conf, sparkContext, sqlContext, trainTransactions)
-		return
-		TransactionPointCluster.clustering(transactions, trainTransactions)							
-		TransactionClassifier.getCountriesCategories(transactions, trainTransactions)
-		TransactionClassifier.getCurrencyCategories(transactions, trainTransactions)
-		TransactionClassifier.getMccCategories(transactions, trainTransactions)
-
-		println(f"""=======> 
-					${TransactionPointCluster.getClustersCount} 
-					${TransactionClassifier.countriesCategories.size} 
-					${TransactionClassifier.currencyCategories.size} 
-					${TransactionClassifier.mccCategories.size} """)
+									filter(t => t.transactionPoint.getX > 0).
+									filter(t => !t.date.isEmpty)
 		
+		//binaryModelClassification(sparkContext, sqlContext, trainTransactions, transactions)
+
+		
+		/*
+				val homeSummary = Statistics.
+							colStats(stat.map(t => t._2).filter(t => t(0) == 1.0))
+
+				println(homeSummary.mean)
+				println(homeSummary.min)
+				println(homeSummary.max)
+				println(homeSummary.count)
+				
+				val farFromHomeSummary = Statistics.
+								colStats(stat.map(t => t._2).filter(t => t(0) == 0.0))
+
+				println(farFromHomeSummary.mean)
+				println(farFromHomeSummary.min)
+				println(farFromHomeSummary.max)
+				println(farFromHomeSummary.count)	*/	
+
+		return	
+		/*
+					val maxByPointCount = clusters.
+											maxBy(t => t(2)) 
+					val maxByDuration = clusters.
+											maxBy(t => t(3))
+
+					if (maxByPointCount(0) == 1 || maxByDuration(0) == 1) 
+						1
+					 else 
+						0*/
+
 		/*trainClassifier(conf, sparkContext, sqlContext, trainTransactions)
 
 		return
@@ -123,7 +328,7 @@ object BankTransactions {
 		
 		//trainClassifier(conf, sparkContext, sqlContext, trainTransactions)
 
-		val modelName = "gini-20-800-with-params"
+		/*val modelName = "gini-20-800-with-params"
 		val result = classifier(
 						conf, 
 						sparkContext, 
@@ -145,7 +350,7 @@ object BankTransactions {
 		df.coalesce(1).write
 		    .format("com.databricks.spark.csv")
 		    .option("header", "true")
-		    .save(f"/home/lookuut/Projects/raif-competition/resource/result$modelName")
+		    .save(f"/home/lookuut/Projects/raif-competition/resource/result$modelName")*/
 		/*
 		val richTrainTrans = intersectWorkHomeCustomers.
 		map{
@@ -199,7 +404,6 @@ object BankTransactions {
 		    .format("com.databricks.spark.csv")
 		    .option("header", "true")
 		    .save(f"/home/lookuut/Projects/raif-competition/resource/result$modelName")*/
-		    
 		    
 	}
 
@@ -260,7 +464,7 @@ object BankTransactions {
 								trainTransactions: RDD[TrainTransaction]) {
 		
 		TransactionClassifier.train(conf, sparkContext, sqlContext, trainTransactions, homePointType)
-		TransactionClassifier.train(conf, sparkContext, sqlContext, trainTransactions, workPointType)
+		//TransactionClassifier.train(conf, sparkContext, sqlContext, trainTransactions, workPointType)
 	}
 
 	def classifier(conf : SparkConf, sparkContext : SparkContext, sqlContext : SQLContext,
@@ -277,6 +481,7 @@ object BankTransactions {
 												homePointType,
 												modelName
 											)	
+
 		val predictedWorkPoints = TransactionClassifier.
 									prediction(conf, 
 												sparkContext, 
@@ -294,5 +499,60 @@ object BankTransactions {
 				val workPointY = if (workPoint.isEmpty) 0.0 else workPoint.get.getY
 				(customer_id, workPointX, workPointY, homePoint.getX, homePoint.getY)
 		}
+	}
+
+
+	def transactionToCsv (t : Transaction) : List[String] = {
+
+		val fmt = DateTimeFormat.forPattern("yyyy-MM-dd");
+
+		List(
+			t.id.toString, 
+			t.amount.getOrElse(0).toString,  
+			t.amountPower10.toString,
+			"\"" + t.atm_address.getOrElse("").replace("\"", "").replace("\\", "") + "\"",
+			if (t.atmPoint.getX == 0.0) null else t.atmPoint.getX.toString,
+			if (t.atmPoint.getY == 0.0) null else t.atmPoint.getY.toString,
+			"\"" + t.city.getOrElse("")  + "\"",
+			"\"" + t.country.getOrElse("")  + "\"",
+			"\"" + t.currency.toString  + "\"",
+			"\"" + t.customer_id + "\"",
+			t.mcc.toString,
+			"\"" + t.pos_address.getOrElse("").replace("\"", "").replace("\\", "")  + "\"",
+			if (t.posPoint.getX == 0.0) null else t.posPoint.getX.toString,
+			if (t.posPoint.getY == 0.0) null else t.posPoint.getY.toString,
+			"\"" + t.terminal_id.getOrElse("") + "\"",
+			if (t.date.isEmpty) "" else fmt.print(t.date.get),
+			t.transactionPoint.getX.toString,
+			t.transactionPoint.getY.toString,
+			t.operationType.toString
+		)
+	}
+
+	def exportToCsv(sqlContext : SQLContext, transactions : RDD[Transaction], trainTransactions : RDD[TrainTransaction]) {
+		import sqlContext.implicits._
+
+		transactions.map{
+			case t => 
+				transactionToCsv(t).mkString(",")
+		}.
+		coalesce(1)
+		    .saveAsTextFile(f"/home/lookuut/Projects/raif-competition/resource/test-transactions")
+
+		trainTransactions.map{
+			case t => 
+				val tt = transactionToCsv(t.transaction)
+				(
+					tt ++ List(
+						t.homePoint.getX.toString,
+						t.homePoint.getY.toString,
+						if (t.workPoint.getX == 0.0) null else t.workPoint.getX.toString,
+						if (t.workPoint.getY == 0.0) null else t.workPoint.getY.toString
+					)
+				).mkString(",")
+		}.
+		coalesce(1)
+		    .saveAsTextFile(f"/home/lookuut/Projects/raif-competition/resource/train-transactions")
+			
 	}
 }

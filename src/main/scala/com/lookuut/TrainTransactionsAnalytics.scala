@@ -30,7 +30,6 @@ import org.apache.spark.rdd._
 
 
 object TrainTransactionsAnalytics {
-
 	def distance(sPoint : Point, ePoint : Point) : Double = {
 		val x = (sPoint.getX - ePoint.getX)
 		val y = (sPoint.getY - ePoint.getY)
@@ -47,174 +46,9 @@ object TrainTransactionsAnalytics {
 			math.ceil(p.getY / (TransactionClassifier.scoreRadious * 2)).toInt
 		)
 	} 
+}
 
-	def districts (conf : SparkConf, 
-						sparkContext : SparkContext, 
-						sqlContext : SQLContext,
-						trainTransactions : RDD[TrainTransaction]
-					) {
-
-		val file = "/home/lookuut/Projects/raif-competition/resource/transaction-point-clusters-2/part-00000"
-		val points = sparkContext.objectFile[(Point, Set[Point])](file)
-
-		val clusterCount = points.count
-		val oneMorePointClusterCount = points.filter(t => t._2.size > 1).count
-
-		val keyPoints = points.filter(t => t._2.size >= 0).map(t => t._1).collect
-		val homePointInCircleMean = trainTransactions.map{
-			case t => 
-				
-				if (
-					keyPoints.filter{
-						case p => 	
-							squaredDistance(t.homePoint, p) <= TransactionClassifier.squareScoreRadious
-					}.size >= 1
-				) 1 else 0
-			}.mean
-
-		val workPointInCircleMean = trainTransactions.map{
-			case t => 
-				
-				if (
-					keyPoints.filter{
-						case p => 	
-							squaredDistance(t.workPoint, p) <= TransactionClassifier.squareScoreRadious
-					}.size >= 1
-				) 1 else 0
-			}.mean
-				
-
-		println(f"$clusterCount $oneMorePointClusterCount $homePointInCircleMean $workPointInCircleMean")
-	} 
-
-	def pointsDistrict(conf : SparkConf, 
-						sparkContext : SparkContext, 
-						sqlContext : SQLContext, 
-						transactions : RDD[Transaction],
-						trainTransactions : RDD[TrainTransaction]) {
-
-		
-		var points = transactions.
-			map(t => t.transactionPoint).
-			union(
-				trainTransactions.map(t => t.transaction.transactionPoint)
-			).
-			distinct.
-			map(p => (pointCell(p), p)).
-			groupByKey.
-			repartition(8).
-			cache
-		
-		var broadcastPoints = points.collectAsMap
-		var clusters = scala.collection.mutable.HashMap[Point, Set[Point]]()
-		var clusterID = 0
-		try {			
-			while (points.count > 1) {
-				val result = getMaxNearPoint(sparkContext, points, clusters, broadcastPoints, clusterID)
-				points = result._1
-				broadcastPoints = result._2
-				val pointsCount = clusters.map(t => t._2.size).sum
-				clusterID += 1
-				println(f"=======>rest points count ${pointsCount} clusterID $clusterID")
-			}
-			clusters += (points.first._2.head -> points.first._2.toSet)
-		} catch {
-			case e : Exception => println("========>>>>>>>>>>>>" + e.getStackTrace.mkString("\n"))
-		}
-		println(f"====> End clusters count ${clusters.size}")		
-		sparkContext.parallelize(clusters.toSeq).coalesce(1).saveAsObjectFile("/home/lookuut/Projects/raif-competition/resource/transaction-point-clusters-2")
-	}
-
-	def getMaxNearPoint (sparkContext : SparkContext, 
-							points : RDD[((Int, Int), Iterable[Point])], 
-							clusteredPoints : scala.collection.mutable.HashMap[Point, Set[Point]], 
-							broadcastPoints : scala.collection.Map[(Int, Int), Iterable[Point]],
-							clusterID : Int
-						) 
-						: 
-						(
-							RDD[((Int, Int), Iterable[Point])] , 
-							scala.collection.Map[(Int, Int), Iterable[Point]]
-						) = {
-
-		val maxNearPoint = points.
-			map{
-					case ((x, y), _points) => 
-							_points.map {
-								case point =>
-									val buffer = ListBuffer[Point]()
-									
-									for (i <- -1 to 1) {
-										for (j <- -1 to 1) {
-											if (broadcastPoints.contains((x + i, y + j)) && 
-												broadcastPoints.get((x + i, y + j)).get.size > 0) {
-												buffer ++= broadcastPoints.get((x + i, y + j)).get.
-													filter(
-														p => 
-															squaredDistance(point, p) <= 4 * TransactionClassifier.squareScoreRadious
-														).toList
-											}
-										}
-									}
-								
-								(
-									point, 
-									buffer.size,
-									buffer.toSet
-								)
-							}
-			}.
-			flatMap(t => t).
-			top(1)(Ordering.by[(Point, Int, Set[Point]), Int](_._2))
-
-		val point = maxNearPoint(0)._1
-		val clusteredPointSet = maxNearPoint(0)._3
-		val pointCells = clusteredPointSet.map(p => pointCell(p)).toSet
-		
-		val filteredPoints = {
-				val rddPoints = points.
-					map {
-						case (cell, points) => 
-							if (pointCells.contains(cell)) {
-								(cell, points.filter(p => !clusteredPointSet.contains(p)))		
-							}  else {
-								(cell, points)		
-							}
-					}
-
-				if (clusterID % 11 == 0) {
-					sparkContext.parallelize(rddPoints.collect)
-				} else {
-					rddPoints
-				}				
-		}
-			
-
-		val filteredBroadcastPoints = {
-				val rddPoints = broadcastPoints.
-								map {
-									case (cell, points) => 
-										if (pointCells.contains(cell)) {
-											(cell, points.filter(p => !clusteredPointSet.contains(p)))		
-										}  else {
-											(cell, points)		
-										}
-								}
-
-				if (clusterID % 11 == 0) {
-					rddPoints.toMap
-				} else {
-					rddPoints
-				}				
-		}
-
-		clusteredPoints += (point -> clusteredPointSet)
-
-		(
-			filteredPoints, 
-			filteredBroadcastPoints
-		)
-	}
+class TrainTransactionsAnalytics(private val sparkContext : SparkContext) {
 
 	def featurePointIdentify (conf : SparkConf, sparkContext : SparkContext, sqlContext : SQLContext, transactions : RDD[Transaction],
 								trainTransactions : RDD[TrainTransaction],
@@ -384,221 +218,191 @@ object TrainTransactionsAnalytics {
 		}
 	}
 
-	def extendByMaxNearPoints (
-		conf : SparkConf, 
-						sparkContext : SparkContext, 
-						sqlContext : SQLContext, 
-						transactions : RDD[Transaction],
-						trainTransactions : RDD[TrainTransaction], 
-						column : String,
-						identityPoints : scala.collection.Map[String, Point]) : scala.collection.Map[String, Point] =
+	def clusteringStat (trainTransactions : RDD[TrainTransaction])
 	{
-		transactions.
-			filter(t => t.transactionPoint.getX > 0).
-			map(t => (t.customer_id , t)).
+		val percent = trainTransactions.map(t => (t.transaction.customer_id , t)).
 			groupByKey.
-			mapValues{
-				case (values) =>
-					val seq = values.toSeq
-					
-					val maxPoints = values.map{
-						case transaction => 
-							seq.map {
-								case t => 
-									val x = t.transactionPoint.getX - transaction.transactionPoint.getX
-									val y = t.transactionPoint.getY - transaction.transactionPoint.getY
-									val distance = math.sqrt(x * x + y * y)
-									(transaction.transactionPoint, transaction.id, t.id , distance)
-							}
-					}.
-					flatMap(t => t).
-					filter(t => t._2 != t._3 &&  t._4 <= TransactionClassifier.scoreRadious).
-					map(t => (t._1, t._3)).
-					groupBy(_._1).
-					map {
-						case (point, points) => 
-							(point, points.size)
-					}.
-					toSeq.
-					sortWith(_._2 > _._2).
-					take(2)
+			map {
+				case (customer_id, transactions) => 
+					val homePoint = transactions.head.homePoint
+					if (
+						transactions.filter(p => 
+											TrainTransactionsAnalytics.squaredDistance(
+												p.transaction.transactionPoint, homePoint
+											) <= TransactionClassifier.squareScoreRadious).
+								size > 0
+							) 1 else 0
+			}.mean
 
-					if (maxPoints.size > 0) {
-						if (column == "homePoint") {
-							maxPoints(0)._1
-						}  else {
-							if (maxPoints.size >= 2) maxPoints(1)._1 else maxPoints(0)._1
-						}
-					} else {
-						values.head.transactionPoint
-					}
-					
-			}.
-			collectAsMap.
-			map{
-				case (customerId, point) => 
-					(customerId, identityPoints.getOrElse(customerId, point))
-			}
-	}
-
-
-	def equalPointsTransactions (conf : SparkConf, 
-									sparkContext : SparkContext, 
-									sqlContext : SQLContext, 
-									transactions : RDD[Transaction],
-									trainTransactions : RDD[TrainTransaction]) {
-
-		val grouppedPoints = trainTransactions.
-						filter(t => t.transaction.transactionPoint.getX > 0).
-						map(t => (t.transaction.transactionPoint, t.transaction.customer_id)).
-						groupByKey.
-						cache
-
-		val customersRealtions = grouppedPoints.
-						map {
-							case (key, values) => 
-								var buffer = ListBuffer[Seq[String]]()
-								val seq  = values.toStream.distinct.toSeq
-
-								for (i <- 0 to seq.size - 1) {
-									for (j <- 0 to seq.size - 1) {
-										buffer += Seq(seq(i), seq(j))
-									}
-								}
-
-								buffer.toList.map {
-									case(t) =>
-										(t(0), t(1), key)
-								}.
-								filter(t => t._1 != t._2)
-						}.
-						flatMap(t => t).
-						groupBy(t => t._1).
-						map {
-							case (customer1, values) =>
-								val customer2Map = values.
-									map(t => (t._2, t._3)).
-									groupBy(t => t._1).
-									map{
-										case (t) => 
-											val pointsMap = t._2.
-												map(tt => (tt._2, 1)).
-												toMap
-											(t._1, pointsMap)
-									}.
-									toMap
-								(customer1, customer2Map)
-						}.
-						collectAsMap
-
-		val pointMap = grouppedPoints.
-						map {
-							case (key, values) => 
-								(key, values.toStream.distinct.toSeq.size)
-						}.
-						collectAsMap
-
-
-		val customers = trainTransactions.
+		println("Train transactions who have point around home " + percent)
+		println("TrainTransaction count " + trainTransactions.count)
+		
+		val stat = trainTransactions.
 			map(t => (t.transaction.customer_id, t)).
 			groupByKey.
-			mapValues {
-				case (values) => 
-					val homePoint = values.head.homePoint
-					val uniquePointsCount = values.
-												map(t => t.transaction.transactionPoint).
-												toStream.
-												distinct.
-												size
-					(homePoint, uniquePointsCount)
-			}.collectAsMap
+			map {
+				case (customer_id, tTransactions) => 
 
-		val results = for (nearsCount <- 2 to 12) yield {
-			val result = customersRealtions.map {
-				case (customer1, nearCustomers) => 
-					nearCustomers.map {
-						case (customer2, equalPointMap) =>
-							val equalCount = equalPointMap.filter(p => pointMap.get(p._1).get <= nearsCount).size
-							val customer1PointsCount = customers.get(customer1).get._2
-							val customer2PointsCount = customers.get(customer2).get._2
+					val homePoint = tTransactions.head.homePoint
+					val minDistance = tTransactions.
+						map(
+							t => TrainTransactionsAnalytics.squaredDistance(
+												t.transaction.transactionPoint , homePoint
+											)
+						).min
 
-							val minPointsCount = math.min(customer1PointsCount, customer2PointsCount)
-							val percent = equalCount.toDouble / minPointsCount
-							val x = customers.get(customer1).get._1.getX - customers.get(customer2).get._1.getX
-							val y = customers.get(customer1).get._1.getY - customers.get(customer2).get._1.getY
-							val distance = math.sqrt(x * x + y * y)
-							(customer1PointsCount, customer2PointsCount, equalCount, distance, percent)
-					}
+					val customerPointCount = tTransactions.map(_.transaction.transactionPoint).toSet.size
+					val transactionsMap = tTransactions.
+										map(_.transaction).
+										toList.
+										sortWith(_.transactionPoint.getX > _.transactionPoint.getX).
+										zipWithIndex.
+										map{case (t, index) =>  (index, t)}.
+										toMap
+
+					val dbScanPoints = transactionsMap.
+										map{case (id, t) => 
+											DBSCANPoint(
+														id, 
+														t.transactionPoint.getX, 
+														t.transactionPoint.getY
+													)
+										}
+					val cluteredPoints = DBSCAN2(0.02, 1).
+											cluster(dbScanPoints)
+
+					val clusters = cluteredPoints.
+						map(p => (p.clusterID, transactionsMap.get(p.id.toInt).get)).
+						groupBy(_._1).
+						map{
+							case (clusterId, transactions) =>
+								val tCount = transactions.size
+								val clusterDates = transactions.map(_._2.date.get).toSeq.sortWith(_.getMillis > _.getMillis).toSet.toList
+								val maxClusterDate = clusterDates.head
+								val minClusterDate = clusterDates.last
+
+								val duration = math.abs(Days.daysBetween(maxClusterDate, minClusterDate).getDays)
+								
+								val clusterPoints = transactions.
+									map(_._2.transactionPoint).
+									toSet.
+									toList
+
+								val pointNears = clusterPoints.map{
+									p => clusterPoints.filter(pp => 
+											TrainTransactionsAnalytics.squaredDistance(
+												pp, p
+											) <= TransactionClassifier.squareScoreRadious
+										).size
+								}
+
+								val dateRatio = {
+									if (clusterDates.size >= 2) {
+										clusterDates.
+											sliding(2).
+											toList.
+											map{
+												case t => 
+													math.abs(Days.daysBetween(t(0), t(1)).getDays)
+											}.
+											sum / tCount
+									} else {
+										1.0
+									}
+								}
+								val isHomeAround = transactions.filter(t => 
+										TrainTransactionsAnalytics.squaredDistance(
+											t._2.transactionPoint, homePoint
+										) <= minDistance
+									).size > 0
+
+								val pointInCluster = transactions.map(_._2.transactionPoint).toSet.size
+								val tAtWeekEndCount = transactions.
+									map(t => t._2.date.get.getDayOfWeek - 1).
+									filter(t => t >= 5 && t <= 6).size
+
+								val tAtWeekdayCount = transactions.
+									map(t => t._2.date.get.getDayOfWeek - 1).
+									filter(t => t <= 4).size
+
+								val posOperationCount = transactions.map(t => t._2.posPoint.getX > 0).size
+								val terminalOperationCount = transactions.map(t => t._2.atmPoint.getX > 0).size
+
+								val avgDistance = {
+									if (clusterPoints.size > 1) {
+										10 - clusterPoints.map{
+											p => clusterPoints.map(pp => 
+													TrainTransactionsAnalytics.distance(
+														pp, p
+													)
+												).sum
+										}.sum / clusterPoints.size
+									} else 0
+								}
+									
+								val aroundHomeMCCCodesCount = transactions.
+										filter(t => aroundHomeMCCCodes.contains(t._2.mcc)).size
+
+								val farFromHomeMCCCodesCount = transactions.
+										filter(t => farFromHomeMCCCodes.contains(t._2.mcc)).size
+								val farFromHomeMccPercent = 1 - farFromHomeMCCCodesCount.toDouble / tCount
+								Vectors.dense(
+									if (isHomeAround) 1.0 else 0.0, 
+									pointInCluster.toDouble,
+									duration.toDouble, 
+									dateRatio,
+									pointNears.sum.toDouble / pointNears.size,
+									tAtWeekEndCount.toDouble / tCount,
+									tAtWeekdayCount.toDouble / tCount,
+									avgDistance,
+									aroundHomeMCCCodesCount / tCount,
+									farFromHomeMccPercent,
+									clusterId
+								)
+						}
+
+					(customer_id, clusters)
 			}.
-			flatMap(t => t)//.
-
-			for (percent <- Array(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)) yield {
-				val equalizeCount = result.
-										filter(t => (t._5 >= percent.toDouble / 100)).
-										size / 2
-				val homeEqualCount = result.
-										filter(t => t._5 >= percent.toDouble / 100 && t._4 <= TransactionClassifier.scoreRadious).
-										size / 2
-
-				(percent, equalizeCount, homeEqualCount, homeEqualCount.toDouble / equalizeCount, nearsCount)
-			}
-		}
-
-		results.flatMap(t=> t).sortBy(_._5).foreach(println)
-	} 
-
-	def homeWorkPointPercent (
-			conf : SparkConf, 
-			sparkContext : SparkContext, 
-			sqlContext : SQLContext, 
-			trainTransactions : RDD[TrainTransaction])
-	{
-		import sqlContext.implicits._
-		
-		val customerTransactions = trainTransactions.
-			filter(t => t.transaction.transactionPoint.getX > 0).
 			cache
-		
-		val customerCount = customerTransactions.map(_.transaction.customer_id).countByValue.size
-		val transactionCount = trainTransactions.count
-		val transactionPointCount = trainTransactions.count
-		val pointPercent = transactionPointCount.toDouble / transactionCount
-		println(f"=====> $transactionCount $transactionPointCount $pointPercent")
 
-		val t = customerTransactions.map{
-			case (t) => 
-				val x = t.homePoint.getX - t.transaction.transactionPoint.getX
-				val y = t.homePoint.getY - t.transaction.transactionPoint.getY
-				(t, math.sqrt(x * x + y * y))
+	
+		(1 to 9).map {
+			case combinationFeatureSize =>
+				List(1, 2, 3, 4, 5, 6, 7, 8, 9).combinations(combinationFeatureSize).map{
+					case combination => 
+					val correctMean = stat.map {
+						case (customer_id, clusters) =>
+							val featuresCorrectSum = combination.map{
+														case feature => 
+															val l = clusters.maxBy(t => t(feature))
+															l(0)
+													}.sum
+							if (featuresCorrectSum >= 1) 1 else 0
+					}.mean
+					val pointCount = stat.map {
+							case (customer_id, clusters) =>
+								combination.map{
+												case feature => 
+													clusters.maxBy(t => t(feature))
+											}.
+											groupBy(t => t(10)).
+											map{case (clusterId, vec) => vec.head(1)}.
+											sum//combination point count
+						}.sum
+					(
+						combination, 
+						correctMean,
+						pointCount,
+						(100000 * correctMean / pointCount)
+					)
+				}.toList
 		}.
-		map(t => (t._1.transaction.customer_id, (t._1, t._2))).
-		groupByKey.
-		mapValues {
-			case (t) => 
-				val count = t.size
-				val nearTrans = t.filter(_._2 <= TransactionClassifier.scoreRadious)
-				val nearTransCount = nearTrans.size
-				
+		flatMap(t => t).
+		sortWith(_._2 < _._2).
+		foreach(println)
 
-				val nearTransAVGCheck = nearTrans.map(_._1.transaction.amount.get).
-											sum / nearTransCount
+		val pointCount = stat.map(t => t._2.map(_(1)).sum).sum
 
-				val farTransCount = t.filter(_._2 > TransactionClassifier.scoreRadious).size
-				val farTransAVGCheck = t.filter(_._2 > TransactionClassifier.scoreRadious).
-											map(_._1.transaction.amount.get).sum / farTransCount
-
-				(count, nearTransCount, nearTransCount.toDouble / count, nearTransAVGCheck, farTransAVGCheck)
-		}.
-		cache
-
-		val percent = t.filter(t => t._2._4 < t._2._5).count.toDouble / customerCount
-		
-		val percent50 = t.filter(_._2._3 >= 0.5).count.toDouble / customerCount
-		val percent40 = t.filter(_._2._3 >= 0.4).count.toDouble / customerCount
-		val percent30 = t.filter(_._2._3 >= 0.3).count.toDouble / customerCount
-		val percent20 = t.filter(_._2._3 >= 0.2).count.toDouble / customerCount
-		val percent10 = t.filter(_._2._3 >= 0.1).count.toDouble / customerCount
-		val percent09 = t.filter(_._2._3 >= 0.09).count.toDouble / customerCount
-		val percent05 = t.filter(_._2._3 >= 0.05).count.toDouble / customerCount
+		println("Points count ===> " + pointCount)
 	}
 }
