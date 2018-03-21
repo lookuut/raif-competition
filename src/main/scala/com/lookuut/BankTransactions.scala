@@ -7,13 +7,12 @@ import java.time.LocalDateTime
 
 import org.apache.spark.sql.Row
 import org.apache.spark.SparkContext
-import org.apache.spark.SparkConf
-import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.functions._
 import java.util.Date
 import com.esri.core.geometry._
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.ml.linalg.{Vector, Vectors}
 import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
 
 import org.apache.spark.util.StatCounter
@@ -22,16 +21,12 @@ import org.joda.time.DateTimeConstants
 import org.apache.spark.storage.StorageLevel
 import com.esri.dbscan.DBSCAN2
 import com.esri.dbscan.DBSCANPoint
-import java.io._
-
-import org.joda.time.DateTime
-import org.joda.time.Duration
-import org.joda.time.Months
-import org.joda.time.Days
 
 import org.apache.spark.rdd._
 import scala.util.Try
 import org.joda.time.format.DateTimeFormat
+import ml.dmlc.xgboost4j.scala.spark.XGBoost
+
 
 object BankTransactions {
 
@@ -45,33 +40,33 @@ object BankTransactions {
 	private val myTestDataFile = "/home/lookuut/Projects/raif-competition/resource/my_test_set.csv"
 
 
-	def binaryModelClassification (sparkContext : SparkContext, 
-										sqlContext : SQLContext,
-										trainTransactions : RDD[TrainTransaction], 
+	def binaryModelClassification (	trainTransactions : RDD[TrainTransaction], 
 										transactions : RDD[Transaction]) {
 
+		val sqlContext = new SQLContext(BankTransactions.spark.sparkContext) 
+		
 		TransactionPointCluster.clustering(transactions, trainTransactions)							
 		TransactionClassifier.getCountriesCategories(transactions, trainTransactions)
 		TransactionClassifier.getCurrencyCategories(transactions, trainTransactions)
 		TransactionClassifier.getMccCategories(transactions, trainTransactions)
 		
-		val regressor = new TransactionRegressor(sparkContext)
+		val regressor = new TransactionRegressor(spark.sparkContext)
 		
-		regressor.generateModel(trainTransactions, transactions, "homePoint", 0.7)
+		//regressor.generateModel(trainTransactions, transactions, "homePoint", 0.7)
 		//regressor.generateModel(trainTransactions, transactions, "workPoint", 0.7)
-
-		/*
+		
 		val homePointModel = regressor.train(trainTransactions, "homePoint")
 		val workPointModel = regressor.train(trainTransactions, "workPoint")
 
+		val testData = regressor.prepareTestData(transactions)
 		val predictedHomePoints = regressor.prediction(
-						transactions,
+						testData,
 						"homePoint",
 						homePointModel
 					)
 
 		val predictedWorkPoints = regressor.prediction(
-						transactions,
+						testData,
 						"workPoint",
 						workPointModel
 					)
@@ -97,137 +92,16 @@ object BankTransactions {
 		df.coalesce(1).write
 		    .format("com.databricks.spark.csv")
 		    .option("header", "true")
-		    .save(f"/home/lookuut/Projects/raif-competition/resource/binary-gini-10-1000") */
+		    .save(f"/home/lookuut/Projects/raif-competition/resource/xgboost-2-8-2-0.2-0.9-1.0-0.65-0.015")
 	}
-
-	private val aroundHomeMCCCodes = List(3011, 3047, 5169, 5933, 7211)
-	private val farFromHomeMCCCodes = List(763,
-										 1731,
-										 1750,
-										 1761,
-										 2842,
-										 3351,
-										 3501,
-										 3503,
-										 3504,
-										 3509,
-										 3512,
-										 3530,
-										 3533,
-										 3543,
-										 3553,
-										 3579,
-										 3586,
-										 3604,
-										 3634,
-										 3640,
-										 3642,
-										 3649,
-										 3665,
-										 3692,
-										 3750,
-										 3778,
-										 4112,
-										 4119,
-										 4121,
-										 4131,
-										 4215,
-										 4225,
-										 4411,
-										 4457,
-										 4511,
-										 4582,
-										 4722,
-										 4784,
-										 4789,
-										 4814,
-										 4816,
-										 5044,
-										 5046,
-										 5051,
-										 5065,
-										 5085,
-										 5094,
-										 5131,
-										 5137,
-										 5139,
-										 5193,
-										 5198,
-										 5199,
-										 5231,
-										 5261,
-										 5271,
-										 5309,
-										 5511,
-										 5521,
-										 5531,
-										 5551,
-										 5561,
-										 5571,
-										 5599,
-										 5712,
-										 5713,
-										 5718,
-										 5733,
-										 5734,
-										 5735,
-										 5813,
-										 5816,
-										 5947,
-										 5963,
-										 5965,
-										 5969,
-										 5970,
-										 5971,
-										 5994,
-										 5996,
-										 5997,
-										 5998,
-										 6010,
-										 7011,
-										 7012,
-										 7261,
-										 7296,
-										 7299,
-										 7333,
-										 7338,
-										 7393,
-										 7394,
-										 7399,
-										 7512,
-										 7523,
-										 7531,
-										 7535,
-										 7622,
-										 7922,
-										 7929,
-										 7991,
-										 7992,
-										 7996,
-										 7998,
-										 7999,
-										 8042,
-										 8062,
-										 8211,
-										 8244,
-										 8249,
-										 8351,
-										 8911,
-										 9211,
-										 9222,
-										 9311,
-										 9399)
+	
+	val spark = SparkSession.builder().getOrCreate()
 
 	def main(args: Array[String]) {
-		
-		val conf = new SparkConf().
-						setAppName(applicationName).
-						setMaster("local[*]")		
 
-		val sparkContext = new SparkContext(conf)
-		val sqlContext = new SQLContext(sparkContext)
+		Apart.init(TransactionClassifier.scoreRadious)
 
-		val trainTransactions = sparkContext.
+		val trainTransactions = spark.sparkContext.
 									textFile(trainDataFile).
 									filter(!_.contains("amount,atm_address,")).
 									zipWithIndex.
@@ -238,20 +112,27 @@ object BankTransactions {
 									filter(t => t.transaction.transactionPoint.getX > 0).
 									filter(t => !t.transaction.date.isEmpty)
 		
-		val transactions = sparkContext.
-									textFile(testDataFile).
-									filter(!_.contains("amount,atm_address,")).
-									zipWithIndex.
-									map{
-									case (line, index) => 
-										Transaction.parse(line, index)
-									}.
-									filter(t => t.transactionPoint.getX > 0).
-									filter(t => !t.date.isEmpty)
+		val transactions = spark.sparkContext.
+								textFile(testDataFile).
+								filter(!_.contains("amount,atm_address,")).
+								zipWithIndex.
+								map{
+								case (line, index) => 
+									Transaction.parse(line, index)
+								}.
+								filter(t => t.transactionPoint.getX > 0).
+								filter(t => !t.date.isEmpty)
+	
 		
-		//binaryModelClassification(sparkContext, sqlContext, trainTransactions, transactions)
+		TransactionPointCluster.clustering(transactions, trainTransactions)							
+		TransactionClassifier.getCountriesCategories(transactions, trainTransactions)
+		TransactionClassifier.getCurrencyCategories(transactions, trainTransactions)
+		TransactionClassifier.getMccCategories(transactions, trainTransactions)
 
-		
+		binaryModelClassification(trainTransactions, transactions)
+		//val analytics = new TrainTransactionsAnalytics(spark)
+		//analytics.clusteringStat(trainTransactions)
+
 		return	
 		
 		/*trainClassifier(conf, sparkContext, sqlContext, trainTransactions)
@@ -380,12 +261,12 @@ object BankTransactions {
 		    
 	}
 
-	def characterPointDefine(conf : SparkConf, 
-								sparkContext : SparkContext, 
-								sqlContext : SQLContext, 
+	def characterPointDefine(ss : SparkSession, 
 								transactions: RDD[Transaction],
 								trainTransactions: RDD[TrainTransaction]) {
-		val trainAnalytics = TrainTransactionsAnalytics(sparkContext)
+		import ss.implicits._
+
+		val trainAnalytics = new TrainTransactionsAnalytics(ss)
 		for (
 			pointEqualPercent <- Array(0.7, 0.9, 1.0);
 			minPointEqualCount <- Array(3, 4)
@@ -416,8 +297,7 @@ object BankTransactions {
 					collect.
 					toSeq
 			
-			import sqlContext.implicits._
-			val df = (sparkContext.parallelize(result)).toDF("_ID_", "_WORK_LAT_", "_WORK_LON_", "_HOME_LAT_", "_HOME_LON_").cache()
+			val df = (ss.sparkContext.parallelize(result)).toDF("_ID_", "_WORK_LAT_", "_WORK_LON_", "_HOME_LAT_", "_HOME_LON_").cache()
 			
 			df.take(20).foreach(println)
 
@@ -432,24 +312,19 @@ object BankTransactions {
 	val homePointType = "homePoint"
 	val workPointType = "workPoint"
 
-	def trainClassifier (conf : SparkConf, 
-								sparkContext : SparkContext, 
-								sqlContext : SQLContext, 
-								trainTransactions: RDD[TrainTransaction]) {
+	def trainClassifier (ss : SparkSession, trainTransactions: RDD[TrainTransaction]) {
 		
-		TransactionClassifier.train(conf, sparkContext, sqlContext, trainTransactions, homePointType)
+		TransactionClassifier.train(ss, trainTransactions, homePointType)
 		//TransactionClassifier.train(conf, sparkContext, sqlContext, trainTransactions, workPointType)
 	}
 
-	def classifier(conf : SparkConf, sparkContext : SparkContext, sqlContext : SQLContext,
+	def classifier(ss : SparkSession,
 		transactions: RDD[Transaction],
 		trainTransactions: RDD[TrainTransaction],
 		modelName : String) : Iterable[(String, Double, Double, Double, Double)] = {
 		
 		val predictedHomePoints = TransactionClassifier.
-									prediction(conf, 
-												sparkContext, 
-												sqlContext, 
+									prediction(ss, 
 												transactions, 
 												trainTransactions.map(t => (t.homePoint, t)), 
 												homePointType,
@@ -457,9 +332,7 @@ object BankTransactions {
 											)	
 
 		val predictedWorkPoints = TransactionClassifier.
-									prediction(conf, 
-												sparkContext, 
-												sqlContext, 
+									prediction(ss,
 												transactions, 
 												trainTransactions.map(t => (t.workPoint, t)),
 												workPointType,

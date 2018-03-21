@@ -132,7 +132,8 @@ object Transaction {
 	}
 
 	def parse(line : String, index : Long) : Transaction = {
-		val parsedRow = parseString(line)
+		val parsedRow = parseString(line)		
+
 		build(index, 
 			parsedRow(0),
 			parsedRow(1),
@@ -165,7 +166,8 @@ object Transaction {
 		posPointX : Option[String],
 		posPointY : Option[String],
 		terminal_id : Option[String],
-		sDate : Option[String]) : Transaction = {
+		sDate : Option[String]
+	) : Transaction = {
 
 		val city = Transaction.getCity(sCity)
 
@@ -184,7 +186,12 @@ object Transaction {
 		val cCurrency = if (currency.getOrElse("643.0") == "") 643.0 else currency.getOrElse("643.0").toDouble
 		val amountPower10 = math.pow(10, stringToDouble(amount).getOrElse(0.0))
 		val mccInt = mcc.getOrElse("0").replace(",","").replace("\"", "").toInt
-
+		val districtApartmensCount = Apart.
+								getDistrictApartmensCount(
+									transactionPoint, 
+									TransactionClassifier.scoreRadious
+								)
+		
 		new Transaction(
 			id,
 			stringToDouble(amount),
@@ -201,7 +208,8 @@ object Transaction {
 			terminal_id,
 			getDate(sDate),
 			transactionPoint,
-			operationType
+			operationType,
+			districtApartmensCount
 		)
 	}
 }
@@ -223,7 +231,8 @@ class Transaction(
 		val terminal_id : Option[String],
 		val date : Option[DateTime],
 		val transactionPoint : Point,
-		val operationType : Int
+		val operationType : Int,
+		val districtApartmensCount : Int
 	) extends Serializable {
 
 	override def toString = f"""Transaction([id=$id],[amount=$amount],[atm_address=$atm_address],[atmPoint=$atmPoint],[city=$city],[country=$country],[currency=$currency],[customer_id=$customer_id],[mcc=$mcc],[pos_address=$pos_address],[posPoint=$posPoint],[terminal_id=$terminal_id],[date=$date],[transactionPoint=$transactionPoint], [operationType=$operationType])"""

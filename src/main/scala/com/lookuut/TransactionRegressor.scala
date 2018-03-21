@@ -1,31 +1,32 @@
 package com.lookuut
 
-import java.util.Calendar
 import org.apache.spark.sql.Row
 import org.apache.spark.SparkContext
-import org.apache.spark.SparkConf
-import org.apache.spark.sql.SQLContext
-import org.apache.spark.sql.SparkSession
+
 import org.apache.spark.sql.functions._
 import com.esri.core.geometry.Point
+import scala.collection.mutable
 
-import org.apache.spark.util.StatCounter
-
-import scala.collection.mutable.ListBuffer
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
-
-import org.apache.spark.mllib.evaluation._
-import org.apache.spark.mllib.tree._
-import org.apache.spark.mllib.tree.model._
 import org.apache.spark.rdd._
-import org.apache.spark.mllib.linalg._
-import org.apache.spark.mllib.regression._
-import scala.reflect.runtime.{universe => ru}
-import org.joda.time.DateTime
+import org.apache.spark.ml.linalg._
+import org.apache.spark.ml.feature.LabeledPoint
+import org.apache.spark.ml.linalg.DenseVector
+
+import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.{SQLContext, Row, DataFrame, Column}
+
+import org.apache.spark.ml.{Pipeline, PipelineModel}
+import org.apache.spark.ml.tuning.{ParamGridBuilder, CrossValidator, CrossValidatorModel}
+
+import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, IndexToString} 
+import org.apache.spark.ml.feature.{VectorAssembler, VectorIndexer}
+import org.apache.spark.ml.feature.{Bucketizer,Normalizer}
+import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
+import ml.dmlc.xgboost4j.scala.spark.{XGBoostEstimator, XGBoostClassificationModel}
 
 
 object TransactionRegressor {
-	def transactionVector(t : Transaction, ratio : Double) : Array[Double] = {
+	def transactionVector(t : Transaction, ratio : Double) : org.apache.spark.ml.linalg.Vector = {
 		val point = t.transactionPoint
 		val cityClusterID = TransactionPointCluster.getPointCluster(t.transactionPoint).toDouble
 		val countryID = TransactionClassifier.countriesCategories.get(t.country.getOrElse("")).get.toDouble
@@ -34,8 +35,8 @@ object TransactionRegressor {
 		val amount = t.amountPower10
 		val currencyID = TransactionClassifier.currencyCategories.get(t.currency).get.toDouble
 		val mcc = TransactionClassifier.mccCategories.get(t.mcc).get.toDouble
-
-		Array(
+		
+		org.apache.spark.ml.linalg.Vectors.dense(
 			amount,
 			currencyID, 
 			cityClusterID, 
@@ -43,20 +44,24 @@ object TransactionRegressor {
 			mcc,
 			dayOfWeek, 
 			operationType, 
+			t.districtApartmensCount,
 			ratio
 		)
 	}
 }
 
 class TransactionRegressor(private val sparkContext : SparkContext) {
+	
+	val sqlContext = new SQLContext(BankTransactions.spark.sparkContext) 
+	import sqlContext.implicits._
 
 	private val trainedModelsPath = "/home/lookuut/Projects/raif-competition/resource/models/"
 	private val trainDataPart = 1.0
 
 
-	def prepareTrainData (trainTransactions : RDD[(TrainTransaction)],
-				column : String = "homePoint"
-			) : RDD[LabeledPoint] = {
+	def prepareTrainData (trainTransactions : RDD[TrainTransaction],
+							column : String = "homePoint"
+			) : RDD[(org.apache.spark.ml.linalg.Vector, Double, Double, String, Double, Double)] = {
 
 		trainTransactions.
 			filter(t => (if (column == "homePoint") t.homePoint else t.workPoint).getX > 0).
@@ -77,21 +82,18 @@ class TransactionRegressor(private val sparkContext : SparkContext) {
 									val isWork = TrainTransactionsAnalytics.distance(point, t.workPoint) <= TransactionClassifier.scoreRadious
 									val ratio = pointTransactions.size.toDouble / customerTransactions.size
 									
-									(TransactionRegressor.transactionVector(t.transaction, ratio), isHome, isWork)
+									(
+										TransactionRegressor.transactionVector(t.transaction, ratio), 
+										if(isHome) 1.0 else 0.0, 
+										if(isWork) 1.0 else 0.0, 
+										t.transaction.customer_id,
+										point.getX,
+										point.getY
+									)
 							}
 					}.flatMap(t => t)					
 			}.
-			flatMap(t => t).
-			map{
-				case t => 
-					val purpose = if (column == "homePoint") t._2 else t._3
-					LabeledPoint(
-						if (purpose) 1.0 else 0.0,
-						Vectors.dense(
-							t._1
-						)
-					)
-			}
+			flatMap(t => t)
 	}
 
 	def categoricalFeaturesInfo () : Map[Int, Int] = {
@@ -104,64 +106,137 @@ class TransactionRegressor(private val sparkContext : SparkContext) {
 			6 -> 2
 		)
 	}
+	
+	def train (
+				trainTransactions : RDD[TrainTransaction],
+				targetColumn : String = "homePoint"
+			) : CrossValidatorModel = {
 
-	def train (trainTransactions : RDD[(TrainTransaction)],
-				column : String = "homePoint"
-			) : RandomForestModel = {
-		val data = prepareTrainData(trainTransactions, column)
+		val trainDF = prepareTrainData(trainTransactions, targetColumn).
+									toDF("features", "homePoint", "workPoint",  "customer_id", "pointx", "pointy")
 
-		val model = RandomForest.trainClassifier(
-									data, 2, categoricalFeaturesInfo,
-									20, "auto",
-									"gini", 5, 1000)
+
+		val xgb = new XGBoostEstimator(get_param().toMap).
+							setLabelCol(targetColumn).
+							setFeaturesCol("features")
+							// XGBoost paramater grid
 		
-		model.save(sparkContext, trainedModelsPath + f"$column-gini-10-1000-with-params-binary")
-		return model
+		val xgbParamGrid = (new ParamGridBuilder()
+		  .addGrid(xgb.round, Array(2))
+		  .addGrid(xgb.maxDepth, Array(8))
+		  .addGrid(xgb.maxBins, Array(2))
+		  .addGrid(xgb.minChildWeight, Array(0.2))
+		  .addGrid(xgb.alpha, Array(0.9))
+		  .addGrid(xgb.lambda, Array(1.0))
+		  .addGrid(xgb.subSample, Array(0.65))
+		  .addGrid(xgb.eta, Array(0.015))
+		  .build())
+
+		val pipeline = new Pipeline().setStages(Array(xgb))
+
+		val evaluator = (new BinaryClassificationEvaluator()
+		  .setLabelCol(targetColumn)
+		  .setRawPredictionCol("prediction")
+		  .setMetricName("areaUnderROC"))
+
+		val cv = (new CrossValidator()
+		  .setEstimator(pipeline)
+		  .setEvaluator(evaluator)
+		  .setEstimatorParamMaps(xgbParamGrid)
+		  .setNumFolds(5)
+		)
+
+	 	cv.fit(trainDF)
 	} 
+
+	def get_param(): scala.collection.mutable.HashMap[String, Any] = {
+	    val params = new scala.collection.mutable.HashMap[String, Any]()
+	        params += "eta" -> 0.1
+	        params += "max_depth" -> 8
+	        params += "gamma" -> 0.0
+	        params += "colsample_bylevel" -> 1
+	        params += "objective" -> "binary:logistic"
+	        params += "num_class" -> 2
+	        params += "booster" -> "gbtree"
+	        params += "num_rounds" -> 20
+	        params += "nWorkers" -> 3
+	    return params
+	}
 
 	def generateModel(trainTransactions : RDD[TrainTransaction], 
 						transactions : RDD[Transaction],
-						column : String = "homePoint",
+						targetColumn : String = "homePoint",
 						trainDataPart : Double = 1.0) {
 		
-		val data = prepareTrainData(trainTransactions, column)
-		val testData = prepareTestData(transactions)
 		
-		data.take(100).foreach(println)
-		println("Train transaction count " + data.count)
-		println("Test transaction count " + testData.count)
-		testData.take(100).foreach(println)
-		/*
-		val Array(_trainData, _cvData) = data.randomSplit(Array(trainDataPart, 1 - trainDataPart))
+
+		val trainingFeaturesDF = prepareTrainData(trainTransactions, targetColumn).
+									toDF("features", "homePoint", "workPoint",  "customer_id", "pointx", "pointy")
+
+		val Array(trainDF, testDF) = trainingFeaturesDF.randomSplit(Array(1 - trainDataPart, trainDataPart), seed = 12345)
+		val xgb = new XGBoostEstimator(get_param().toMap).
+							setLabelCol(targetColumn).
+							setFeaturesCol("features")
+							// XGBoost paramater grid
 		
-		val trainData = _trainData.cache() 
-		val cvData = _cvData.cache()
+		val xgbParamGrid = (new ParamGridBuilder()
+		  .addGrid(xgb.round, Array(2))
+		  .addGrid(xgb.maxDepth, Array(8))
+		  .addGrid(xgb.maxBins, Array(2))
+		  .addGrid(xgb.minChildWeight, Array(0.2))
+		  .addGrid(xgb.alpha, Array(0.8, 0.9))
+		  .addGrid(xgb.lambda, Array(0.9, 1.0))
+		  .addGrid(xgb.subSample, Array(0.6, 0.65, 0.7))
+		  .addGrid(xgb.eta, Array(0.015))
+		  .build())
 
-		val evaluations = for (
-								impurity <- Array("gini", "entropy");
-								depth <- Array(5, 7, 10);
-								bins <- Array(800, 1000)
-							) yield {
-								val model = DecisionTree.trainClassifier(
-									trainData, 2, categoricalFeaturesInfo,
-									impurity, depth, bins)
+		val pipeline = new Pipeline().setStages(Array(xgb))
 
-								val trainAccuracy = getMetrics(model, trainData).accuracy
-								val cvAccuracy = getMetrics(model, cvData).accuracy
-								val predictedCustomerCount = prediction(testData, column, model).size
-								((impurity, depth, bins), (trainAccuracy, cvAccuracy, predictedCustomerCount))
-							}
+		val evaluator = (new BinaryClassificationEvaluator()
+		  .setLabelCol(targetColumn)
+		  .setRawPredictionCol("prediction")
+		  .setMetricName("areaUnderROC"))
 
-		evaluations.sortBy(_._2._2).reverse.foreach(println)*/
-	}	
+		val cv = (new CrossValidator()
+		  .setEstimator(pipeline)
+		  .setEvaluator(evaluator)
+		  .setEstimatorParamMaps(xgbParamGrid)
+		  .setNumFolds(5)
+		)
 
-	def loadDecisionTree (sc : SparkContext, targetPointType : String, modelName : String) : DecisionTreeModel = {
-		DecisionTreeModel.load(sc, f"$trainedModelsPath$targetPointType-$modelName")
+		val xgbModel = cv.fit(trainDF)
+		val results = xgbModel.transform(testDF)
+
+		(xgbModel.bestModel.asInstanceOf[PipelineModel]
+		  .stages(0).asInstanceOf[XGBoostClassificationModel]
+		  .extractParamMap().toSeq.foreach(println))
+		
+		val prediction = results.
+			select("probabilities", targetColumn, "customer_id", "prediction", "pointx", "pointy").
+			map {
+				case Row(
+					probabilities: Vector, 
+					targetColumn: Double, 
+					customerId : String, 
+					prediction: Double, 
+					pointx : Double,
+					pointy : Double
+				) =>
+				(customerId, (1 - probabilities(0), targetColumn, pointx, pointy))
+			  }.
+			  rdd.
+			  groupByKey.
+			  map {
+			  	case (customerId, predictions) =>
+			  		predictions.maxBy(_._1)._2
+			  }.mean
+
+		println("========> " +prediction)
 	}
 
 
-	def prepareTestData (transactions : RDD[Transaction]
-			) : RDD[(String, (Point, org.apache.spark.mllib.linalg.Vector))] = {
+	def prepareTestData (transactions : RDD[Transaction]) : 
+							RDD[(String, (Double, Double, org.apache.spark.ml.linalg.Vector))] = {
 
 		transactions.
 			map(t => (t.customer_id, t)).
@@ -178,7 +253,11 @@ class TransactionRegressor(private val sparkContext : SparkContext) {
 										val t = tt._2
 										val ratio = pointTransactions.size.toDouble / customerTransactions.size
 										
-										(t.transactionPoint, Vectors.dense(TransactionRegressor.transactionVector(t, ratio)))
+										(
+											t.transactionPoint.getX,
+											t.transactionPoint.getY, 
+											TransactionRegressor.transactionVector(t, ratio)
+										)
 								}
 						}.
 						flatMap(t => t)
@@ -188,58 +267,40 @@ class TransactionRegressor(private val sparkContext : SparkContext) {
 			map(t => t._2.map(tt => (t._1, tt))).
 			flatMap(t => t)
 	}
-
+	
 	def prediction(
-			toPredictTransactions : RDD[(String, (Point, org.apache.spark.mllib.linalg.Vector))], 
-			targetPointType : String = "homePoint",
-			model : DecisionTreeModel
+			toPredictTransactions : RDD[(String, (Double, Double, org.apache.spark.ml.linalg.Vector))], 
+			targetColumn : String = "homePoint",
+			model : CrossValidatorModel
 		) : scala.collection.Map[String, Point] = {
-		
-		val prediction = toPredictTransactions.
-			map(t=> (t._1, t._2._1, model.predict(t._2._2))).
-			filter(t => t._3 == 1).
-			map(t => (t._1, t._2)).
-			groupByKey.
-			mapValues{
-				case points =>
-					points.map {
-						case (pLeft) => 
-							val nearsCount = points.map {
-											case(pRight) => TrainTransactionsAnalytics.distance(pLeft, pRight)
-										}.filter(t => t <= TransactionClassifier.scoreRadious).
-										size
-						(pLeft, nearsCount)
-					}.
-					maxBy(_._2)._1
-			}.
-			cache
 
-		val customersCount = prediction.map(t => t._1).distinct.count
-		val customersWithFewPointsCount = prediction.
-			map(t => (t._1, t._2)).
-			groupByKey.
-			map{
-				case (key, t) => 
-					(key, t, t.size)
-			}.
-			filter(t => t._3 > 1).count
-		println(f"========++> $customersCount and $customersWithFewPointsCount")
+		val sqlContext = new SQLContext(BankTransactions.spark.sparkContext) 
+		import sqlContext.implicits._
 
-		prediction.
-			map(t => (t._1, t._2)).
-			groupByKey.
-			mapValues{
-				case t => 
-					t.head
-			}.
-			collectAsMap
-	}
-	
-	
-	def getMetrics(model: DecisionTreeModel, data: RDD[LabeledPoint]) : MulticlassMetrics = {
-		val predictionsAndLabels = data.map(example =>
-			(model.predict(example.features), example.label)
-		)
-		new MulticlassMetrics(predictionsAndLabels)
+		val testDF = toPredictTransactions.toDF("customer_id", "pointx", "pointy", "features")
+
+
+		val results = model.transform(testDF)
+		val prediction = results.
+			select("probabilities", "customer_id", "prediction", "pointx", "pointy").
+			map {
+				case Row(
+					probabilities: Vector, 
+					customerId : String, 
+					prediction: Double, 
+					pointx : Double,
+					pointy : Double
+				) =>
+				(customerId, (1 - probabilities(0), pointx, pointy))
+			  }.
+			  rdd.
+			  groupByKey.
+			  map {
+			  	case (customerId, predictions) =>
+			  		val maxProbabiltyPrediction = predictions.maxBy(_._1)
+			  		(customerId, new Point(maxProbabiltyPrediction._2, maxProbabiltyPrediction._3))
+			  }.
+			  collectAsMap
+		prediction
 	}
 }

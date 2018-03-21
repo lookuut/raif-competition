@@ -1,32 +1,27 @@
 package com.lookuut
 
-import java.nio.file.{Paths, Files}
-import java.util.Calendar
-import java.time.LocalDateTime
-
 import org.apache.spark.sql.Row
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkConf
-import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
 import java.util.Date
 import com.esri.core.geometry._
 
 import org.apache.spark.util.StatCounter
-
-import scala.collection.mutable.ListBuffer
-import org.joda.time.DateTimeConstants
 import org.apache.spark.storage.StorageLevel
-import scala.util.{Try,Success,Failure}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
+
 import com.esri.dbscan.DBSCAN2
 import com.esri.dbscan.DBSCANPoint
-import java.io._
+
 import scala.reflect.runtime.{universe => ru}
 import scala.math.Ordering
 
 import org.apache.spark.rdd._
+
+import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
+
+import org.joda.time.DateTime
+import org.joda.time.Days
 
 
 object TrainTransactionsAnalytics {
@@ -48,7 +43,8 @@ object TrainTransactionsAnalytics {
 	} 
 }
 
-class TrainTransactionsAnalytics(private val sparkContext : SparkContext) {
+class TrainTransactionsAnalytics(private val sparkSession : SparkSession) extends Serializable {
+	import sparkSession.implicits._
 
 	def featurePointIdentify (transactions : RDD[Transaction],
 								trainTransactions : RDD[TrainTransaction],
@@ -130,7 +126,7 @@ class TrainTransactionsAnalytics(private val sparkContext : SparkContext) {
 									groupBy(_._1).
 									collectAsMap
 		
-		val customerToPointBroadcast = sparkContext.broadcast(customerToPointMap)
+		val customerToPointBroadcast = sparkSession.sparkContext.broadcast(customerToPointMap)
 
 		val testPoints = transactions.
 			filter(t => t.transactionPoint.getX > 0).
@@ -195,9 +191,6 @@ class TrainTransactionsAnalytics(private val sparkContext : SparkContext) {
 		if (definedCustomers.size > 0) {
 			
 			featurePointIdentify(
-				conf, 
-				sparkContext, 
-				sqlContext, 
 				newTransactions.repartition(8), 
 				trainTransactions.union(predictedTrainTransactions).repartition(8), 
 				column,
@@ -237,7 +230,7 @@ class TrainTransactionsAnalytics(private val sparkContext : SparkContext) {
 		println("Train transactions who have point around home " + percent)
 		println("TrainTransaction count " + trainTransactions.count)
 		
-		val stat = trainTransactions.
+		val customers = trainTransactions.
 			map(t => (t.transaction.customer_id, t)).
 			groupByKey.
 			map {
@@ -345,64 +338,283 @@ class TrainTransactionsAnalytics(private val sparkContext : SparkContext) {
 
 								val farFromHomeMCCCodesCount = transactions.
 										filter(t => farFromHomeMCCCodes.contains(t._2.mcc)).size
+
 								val farFromHomeMccPercent = 1 - farFromHomeMCCCodesCount.toDouble / tCount
-								Vectors.dense(
-									if (isHomeAround) 1.0 else 0.0, 
-									pointInCluster.toDouble,
-									duration.toDouble, 
-									dateRatio,
-									pointNears.sum.toDouble / pointNears.size,
-									tAtWeekEndCount.toDouble / tCount,
-									tAtWeekdayCount.toDouble / tCount,
-									avgDistance,
-									aroundHomeMCCCodesCount / tCount,
-									farFromHomeMccPercent,
-									clusterId
+
+								(
+									Vectors.dense(
+										if (isHomeAround) 1.0 else 0.0, 
+										pointInCluster.toDouble,
+										duration.toDouble, 
+										dateRatio,
+										pointNears.sum.toDouble / pointNears.size,
+										tAtWeekEndCount.toDouble / tCount,
+										tAtWeekdayCount.toDouble / tCount,
+										avgDistance,
+										aroundHomeMCCCodesCount / tCount,
+										farFromHomeMccPercent,
+										clusterId
+									),
+									transactions.map(t=> t._2),
+									homePoint
 								)
 						}
 
-					(customer_id, clusters)
+					val customerMaxClusters = (1 to 9).map {
+						case feature => 
+							val cluster = clusters.maxBy(t => t._1(feature))
+						(cluster._1(10), cluster)
+					}.
+					groupBy(_._1).
+					map{case (clusterId, clusters) => clusters.head}
+
+					(customer_id, customerMaxClusters, customerMaxClusters.size)
 			}.
 			cache
 
-	
-		(1 to 9).map {
-			case combinationFeatureSize =>
-				List(1, 2, 3, 4, 5, 6, 7, 8, 9).combinations(combinationFeatureSize).map{
-					case combination => 
-					val correctMean = stat.map {
-						case (customer_id, clusters) =>
-							val featuresCorrectSum = combination.map{
-														case feature => 
-															val l = clusters.maxBy(t => t(feature))
-															l(0)
-													}.sum
-							if (featuresCorrectSum >= 1) 1 else 0
-					}.mean
-					val pointCount = stat.map {
-							case (customer_id, clusters) =>
-								combination.map{
-												case feature => 
-													clusters.maxBy(t => t(feature))
-											}.
-											groupBy(t => t(10)).
-											map{case (clusterId, vec) => vec.head(1)}.
-											sum//combination point count
-						}.sum
-					(
-						combination, 
-						correctMean,
-						pointCount,
-						(100000 * correctMean / pointCount)
-					)
-				}.toList
+		val customersWithPointAroundHome = customers.map(customer => 
+			if(customer._2.map{
+				case cluster => 
+					val clusterAroundHome = cluster._2._2.map{ 
+						case transaction => 
+							if (TrainTransactionsAnalytics.
+									distance(
+										transaction.transactionPoint, cluster._2._3
+									) <= TransactionClassifier.scoreRadious
+							) 1 else 0
+					}.sum
+
+					if (clusterAroundHome >= 1) 1 else 0
+			}.sum >= 1) 1 else 0).mean
+		
+		val customerAVGClusterCount = customers.map(c => c._2.size).mean
+		val clustersCount = customers.map(c => c._2.size).sum
+		val customersCount = customers.count
+		println(f"Unqiue points count ===> ${customersWithPointAroundHome} ${customerAVGClusterCount} ${clustersCount} ${customersCount}")
+		/*
+		val pointsResult = customers.map{case customer => 
+			val points = customer._2.map{
+				case cluster => 
+
+					val clusterTransactions = cluster._2._2
+					val clusterApartmentsCount = clusterTransactions.
+													map(t => t.transactionPoint).
+													toSet.
+													map((p: Point) => Apart.
+															getDistrictApartmens(p, TransactionClassifier.scoreRadious)
+													).
+													flatMap(t => t).
+													toSet.
+													map((a: Apart) => a.apartmens).
+													sum
+
+					val clusterTransactionsCount = cluster._2._2.size
+					val homePoint = cluster._2._3
+					clusterTransactions.map{
+						case transaction => 
+							val point = transaction.transactionPoint
+							val cityClusterID = TransactionPointCluster.getPointCluster(point).toDouble
+							val countryID = TransactionClassifier.countriesCategories.get(transaction.country.getOrElse("")).get.toDouble
+							val currencyID = TransactionClassifier.currencyCategories.get(transaction.currency).get.toDouble
+							val mcc = TransactionClassifier.mccCategories.get(transaction.mcc).get.toDouble
+							val dayOfWeek = TransactionClassifier.getDateCategory(transaction.date.get).toDouble
+							val pointTransactions = clusterTransactions.
+														filter(t => t.transactionPoint == transaction.transactionPoint)
+										
+							val ratio = pointTransactions.
+											size.toDouble / clusterTransactionsCount
+
+							val nearsCount = clusterTransactions.map(t => t.transactionPoint).
+												toSet.
+												filter {
+													 (t: Point) => 
+														TrainTransactionsAnalytics.
+															distance(
+																t, point
+															) <= TransactionClassifier.scoreRadious
+												}.size
+
+							val pointDates = pointTransactions.map(_.date.get).toSeq.sortWith(_.getMillis > _.getMillis).toSet.toList
+							val dateRatio = {
+												if (pointDates.size >= 2) {
+													pointDates.
+														sliding(2).
+														toList.
+														map{
+															case t => 
+																math.abs(Days.daysBetween(t(0), t(1)).getDays)
+														}.
+														sum / pointTransactions.size
+												} else {
+													1.0
+												}
+											}
+											
+							val pointApartmentsCount = Apart.getDistrictApartmensCount(point, TransactionClassifier.scoreRadious)
+							val distance = TrainTransactionsAnalytics.distance(point, homePoint)
+							val apartmentsPercent = if (clusterApartmentsCount == 0) 0 else transaction.districtApartmensCount.toDouble / clusterApartmentsCount
+						(
+							Vectors.dense(
+								dayOfWeek,
+								cityClusterID, 
+								countryID,
+								mcc,
+								dayOfWeek,
+								ratio,
+								nearsCount,
+								dateRatio,
+								if (aroundHomeMCCCodes.contains(transaction.mcc)) 1.0 else 0.0,
+								if (farFromHomeMCCCodes.contains(transaction.mcc)) 0.0 else 1.0,
+								
+							),
+							distance,
+							point,
+							if (distance <= 0.02) 1 else 0
+						)
+					}
+			}.flatMap(t => t)
+			val minDistancePoint = points.minBy(_._2)._3
+
+			if (points.filter(t => t._4 >= 1).size <= 0) 
+				points.filter(t => t._3 == minDistancePoint).map(t => (t._1, t._2, t._3, 1))
+			 else 
+				points
 		}.
-		flatMap(t => t).
-		sortWith(_._2 < _._2).
-		foreach(println)
+		flatMap(t => t)
 
-		val pointCount = stat.map(t => t._2.map(_(1)).sum).sum
+		val minDistanceSummary = Statistics.colStats(pointsResult.filter(_._4 >= 1).map(_._1))
+		println(minDistanceSummary.mean)  // a dense vector containing the mean value for each column
+		println(minDistanceSummary.max)  // column-wise variance
+		println(minDistanceSummary.min)
+		println(minDistanceSummary.count) 
 
-		println("Points count ===> " + pointCount)
+
+		val badDistanceSummary = Statistics.colStats(pointsResult.filter(_._4 == 0).map(_._1))
+		println(badDistanceSummary.mean)  // a dense vector containing the mean value for each column
+		println(badDistanceSummary.max)  // column-wise variance
+		println(badDistanceSummary.min)
+		println(badDistanceSummary.count)
+		*/
+		
 	}
+
+
+	
+	private val aroundHomeMCCCodes = List(3011, 3047, 5169, 5933, 7211)
+	private val farFromHomeMCCCodes = List(763,
+										 1731,
+										 1750,
+										 1761,
+										 2842,
+										 3351,
+										 3501,
+										 3503,
+										 3504,
+										 3509,
+										 3512,
+										 3530,
+										 3533,
+										 3543,
+										 3553,
+										 3579,
+										 3586,
+										 3604,
+										 3634,
+										 3640,
+										 3642,
+										 3649,
+										 3665,
+										 3692,
+										 3750,
+										 3778,
+										 4112,
+										 4119,
+										 4121,
+										 4131,
+										 4215,
+										 4225,
+										 4411,
+										 4457,
+										 4511,
+										 4582,
+										 4722,
+										 4784,
+										 4789,
+										 4814,
+										 4816,
+										 5044,
+										 5046,
+										 5051,
+										 5065,
+										 5085,
+										 5094,
+										 5131,
+										 5137,
+										 5139,
+										 5193,
+										 5198,
+										 5199,
+										 5231,
+										 5261,
+										 5271,
+										 5309,
+										 5511,
+										 5521,
+										 5531,
+										 5551,
+										 5561,
+										 5571,
+										 5599,
+										 5712,
+										 5713,
+										 5718,
+										 5733,
+										 5734,
+										 5735,
+										 5813,
+										 5816,
+										 5947,
+										 5963,
+										 5965,
+										 5969,
+										 5970,
+										 5971,
+										 5994,
+										 5996,
+										 5997,
+										 5998,
+										 6010,
+										 7011,
+										 7012,
+										 7261,
+										 7296,
+										 7299,
+										 7333,
+										 7338,
+										 7393,
+										 7394,
+										 7399,
+										 7512,
+										 7523,
+										 7531,
+										 7535,
+										 7622,
+										 7922,
+										 7929,
+										 7991,
+										 7992,
+										 7996,
+										 7998,
+										 7999,
+										 8042,
+										 8062,
+										 8211,
+										 8244,
+										 8249,
+										 8351,
+										 8911,
+										 9211,
+										 9222,
+										 9311,
+										 9399)
 }

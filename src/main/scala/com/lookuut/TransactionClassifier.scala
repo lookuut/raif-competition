@@ -110,9 +110,7 @@ object TransactionClassifier {
 	
 	private val kMeasClusterCount = 150
 
-	def train (conf : SparkConf, 
-				sparkContext : SparkContext, 
-				sqlContext : SQLContext, 
+	def train (ss : SparkSession,
 				trainTransactions : RDD[(TrainTransaction)],
 				targetPointType : String = "homePoint"
 			) {
@@ -159,7 +157,7 @@ object TransactionClassifier {
 			cache
 
 		(5 to 160 by 5).
-				map(k => (k, clusteringScore(sparkContext, transactionsSpectre, k, f"kmeans-${targetPointType}-${k}"))).
+				map(k => (k, clusteringScore(ss, transactionsSpectre, k, f"kmeans-${targetPointType}-${k}"))).
 				foreach(println)
 
 		//val model = loadKMeansModel(sparkContext, targetPointType, kMeasClusterCount)
@@ -176,13 +174,11 @@ object TransactionClassifier {
 		*/
 	} 
 
-	def kmeansModelTest (conf : SparkConf, 
-							sparkContext : SparkContext, 
-							sqlContext : SQLContext, 
+	def kmeansModelTest (ss : SparkSession,
 							trainTransactions : RDD[(TrainTransaction)],
 							targetPointType : String = "homePoint") {
 		val random = new Random
-		val model = loadKMeansModel(sparkContext, targetPointType, kMeasClusterCount)
+		val model = loadKMeansModel(ss, targetPointType, kMeasClusterCount)
 
 		val result = trainTransactions.
 			filter(t => TrainTransactionsAnalytics.
@@ -332,7 +328,7 @@ object TransactionClassifier {
 		}.sum
 	}
 
-	def clusteringScore(sparkContext : SparkContext, data : RDD[Vector], k : Int, modelName : String = "") = {
+	def clusteringScore(ss : SparkSession, data : RDD[Vector], k : Int, modelName : String = "") = {
 
 		val kmeans = new KMeans()
 
@@ -343,7 +339,7 @@ object TransactionClassifier {
 		val model = kmeans.run(data)
 
 		if (modelName != "") {
-			model.save(sparkContext, f"${trainedModelsPath}${modelName}")
+			model.save(ss.sparkContext, f"${trainedModelsPath}${modelName}")
 		}
 		
 		data.map(datum => distToCentroid(datum, model)).mean()
@@ -393,18 +389,16 @@ object TransactionClassifier {
 		distance(centroid, datum)
 	}
 
-	def loadKMeansModel (sc : SparkContext, targetPointType : String, kMeasClusterCount : Int) : KMeansModel = {
-		KMeansModel.load(sc, f"${trainedModelsPath}kmeans-${targetPointType}-${kMeasClusterCount}")
+	def loadKMeansModel (ss : SparkSession, targetPointType : String, kMeasClusterCount : Int) : KMeansModel = {
+		KMeansModel.load(ss.sparkContext, f"${trainedModelsPath}kmeans-${targetPointType}-${kMeasClusterCount}")
 	}
 
-	def loadDecisionTree (sc : SparkContext, targetPointType : String, modelName : String) : DecisionTreeModel = {
-		DecisionTreeModel.load(sc, f"$trainedModelsPath$targetPointType-$modelName")
+	def loadDecisionTree (ss : SparkSession, targetPointType : String, modelName : String) : DecisionTreeModel = {
+		DecisionTreeModel.load(ss.sparkContext, f"$trainedModelsPath$targetPointType-$modelName")
 	}
 
 	def prediction(
-			conf : SparkConf, 
-			sparkContext : SparkContext, 
-			sqlContext : SQLContext, 
+			ss : SparkSession, 
 			toPredictTransactions : RDD[Transaction], 
 			trainTransactions : RDD[(Point, TrainTransaction)],
 			targetPointType : String = "homePoint",
