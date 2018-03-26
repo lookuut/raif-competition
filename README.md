@@ -6,7 +6,7 @@
 DBSCAN. Также xgboost binary classification. Помимо алгоритмов машинного обучения, были применены технологии spark Pipeline, 
 CrossValidator</p>
 
-<p>Использованные библиотеки и исходники: 
+<p>Использованные библиотеки и исходники: <br/>
 esri geometry https://github.com/Esri/geometry-api-java <br/>
 DBSCAN https://github.com/mraad/dbscan-spark <br/>
 xgboost https://github.com/dmlc/xgboost <br/>
