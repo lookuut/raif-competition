@@ -2,3 +2,8 @@ resource/
 target/
 *.sh
 project/
+lib/
+copy-to-serv.sh
+config.scala
+src/main/java/
+src/main/scala/com/esri/

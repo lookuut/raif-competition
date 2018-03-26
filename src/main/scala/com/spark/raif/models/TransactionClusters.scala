@@ -1,33 +1,30 @@
-package com.lookuut
+package com.spark.raif.models
 
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkConf
-import org.apache.spark.sql.SQLContext
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions._
-import com.esri.core.geometry.Point
 
 import com.esri.dbscan.DBSCAN2
 import com.esri.dbscan.DBSCANPoint
+import com.esri.core.geometry.Point
 
-import org.apache.spark.rdd._
+import org.apache.spark.rdd.RDD
+import com.spark.raif.Consts
+import scala.collection.Map
 
-object TransactionPointCluster {
+object TransactionClusters {
 
-	private val clusterDistance = 0.3
+	private val distance = Consts.scoreRadious * 3
 	private val minPoint = 1
 	private val roundBase = 100
 
 	var clusters = scala.collection.Map[Point, Int]()
 	var clustersCount = 0
 
-	def clustering (transactions : RDD[Transaction], trainTransactions : RDD[TrainTransaction]) : scala.collection.Map[Point, Int] = {
+	def clustering (transactions : RDD[Transaction], trainTransactions : RDD[TrainTransaction]) : Map[Point, Int] = {
 
 		val points = transactions.
-						map(t => t.transactionPoint).
+						map(t => t.point).
 						union(
 							trainTransactions.
-								map(t => t.transaction.transactionPoint)
+								map(t => t.transaction.point)
 						).
 						map(roundPoint(_)).
 						distinct.
@@ -38,7 +35,7 @@ object TransactionPointCluster {
 						collect.
 						toSeq
 		
-		clusters = DBSCAN2(clusterDistance, minPoint).
+		clusters = DBSCAN2(distance, minPoint).
 			cluster(
 				points
 			).
@@ -53,7 +50,7 @@ object TransactionPointCluster {
 		clustersCount
 	}
 
-	def getClusters() : scala.collection.Map[Point, Int] = {
+	def getClusters() : Map[Point, Int] = {
 		clusters
 	}
 

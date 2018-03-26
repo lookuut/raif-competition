@@ -1,4 +1,4 @@
-name := "Ru translit metaphone"
+name := "Raif competition"
 
 version := "0.1.0"
 

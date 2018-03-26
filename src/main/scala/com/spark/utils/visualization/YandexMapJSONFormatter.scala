@@ -1,25 +1,10 @@
 package com.lookuut
 
-import org.apache.spark.sql.Row
 import org.apache.spark.SparkContext
-import org.apache.spark.SparkConf
-import org.apache.spark.sql.SQLContext
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions._
+import org.apache.spark.rdd.RDD
+import com.esri.core.geometry.Point
 
-import com.esri.core.geometry._
-
-import org.apache.spark.storage.StorageLevel
-
-import org.apache.spark.rdd._
-
-class Visualization(private val sparkContext : SparkContext) {
-
-	val moscowCartesianCenter = new Point(55.752818, 37.621754)
-
-	private val jsonResultFile = "/home/lookuut/Projects/raif-competition/resource/result/dbscan/json/"
-	private val csvResultFile = "/home/lookuut/Projects/raif-competition/resource/result/dbscan/csv"
-
+class YandexMapJSONFormatter(private val sparkContext : SparkContext, private val jsonResultFile : String) {
 
 	def cartesianToPolar(point : Point, cartesianCenter : Point) = {
 		val cartesianPoint = new Point(point.getX - cartesianCenter.getX, 
@@ -33,7 +18,7 @@ class Visualization(private val sparkContext : SparkContext) {
 		(distance, angle)
 	}
 	
-	def customerPoints (customerId : String, customerTransactions : scala.collection.Map[Point, (String, String)]) {
+	def customerPoints (customerId : String, customerTransactions : Map[Point, (String, String)]) {
 
 		val header = ("""{"type": "FeatureCollection","features": [""")
 	    val bottom = ("""{"type": "Feature","id": -1, "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},"options": {"preset": "islands#blueIcon"}}]}""")
@@ -74,18 +59,4 @@ class Visualization(private val sparkContext : SparkContext) {
 		"islands#violetIcon", 
 		"islands#blackIcon"
 	)
-
-	def testEsri() {
-		val point1 = new Point(3, 0)
-		
-		var mPoints = new MultiPoint()
-
-		mPoints.add(0,0)
-		mPoints.add(1,0)
-		mPoints.add(4,0)
-		
-		val convexHull = OperatorConvexHull.local().execute(mPoints, null)
-		
-		println(!OperatorDisjoint.local().execute(point1, convexHull, null, null))
-	}
 }
