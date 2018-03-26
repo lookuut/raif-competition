@@ -7,9 +7,9 @@ DBSCAN. Также xgboost binary classification. Помимо алгоритм�
 CrossValidator</p>
 
 <p>Использованные библиотеки и исходники: 
-esri geometry https://github.com/Esri/geometry-api-java
-DBSCAN https://github.com/mraad/dbscan-spark
-xgboost https://github.com/dmlc/xgboost
+esri geometry https://github.com/Esri/geometry-api-java <br/>
+DBSCAN https://github.com/mraad/dbscan-spark <br/>
+xgboost https://github.com/dmlc/xgboost <br/>
 Spark mllib 
 </p>
 <p>Итог:(0.365266) 69 место финальном рейтинге</p>
