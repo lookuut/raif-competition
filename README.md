@@ -12,4 +12,4 @@ DBSCAN https://github.com/mraad/dbscan-spark <br/>
 xgboost https://github.com/dmlc/xgboost <br/>
 Spark mllib 
 </p>
-<p>Итог:(0.365266) 69 место финальном рейтинге</p>
+<p>Краткий итог: нативные либы от Spark показали себя не очень, максимальный скор был при комбинировании DBSCAN, RandomForest и моим самописным CustomerPointFeature - 0.31. XGBoost с CrossValidation показали себя лучше - 0.365266, 69 место финальном рейтинге</p>
