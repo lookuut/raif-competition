@@ -1,3 +1,13 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc XGBoost Binary Classification for calculate probability of 
+ * 		 is home or work point around at the transaction point
+ * 	
+ *
+ */
+ 
 package com.spark.raif.solutions
 
 import org.apache.spark.sql.Row

@@ -1,3 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc Class for visualization points in YandexMap
+ * 	
+ *
+ */
+ 
 package com.lookuut
 
 import org.apache.spark.SparkContext

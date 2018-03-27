@@ -1,3 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc Transaction for train, extend Transaction class
+ * 	
+ *
+ */
+
 package com.spark.raif.models
 
 

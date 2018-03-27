@@ -1,3 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc Transaction
+ * 	
+ *
+ */
+
 package com.spark.raif.models
 
 import org.apache.spark.rdd.RDD

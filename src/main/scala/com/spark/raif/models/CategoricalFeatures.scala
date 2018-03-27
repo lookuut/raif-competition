@@ -1,3 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc Transcation categorical features for one hot encoding
+ * 	
+ *
+ */
+
 package com.spark.raif.models
 
 import org.apache.spark.rdd.RDD

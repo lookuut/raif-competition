@@ -1,3 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc Transaction cities formatter
+ * 	
+ *
+ */
+
 package com.spark.raif.models
 
 object City {

@@ -1,3 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc object for parse Russia apartments csv file from https://www.reformagkh.ru/
+ * 		 Save parsed files to Map, spatial index as key of map
+ *
+ */
+
 package com.spark.raif.models
 
 import com.esri.core.geometry.Point
@@ -60,7 +69,7 @@ object Apartment {
 			groupByKey.
 			mapValues {
 				case aparts => 
-					aparts.map(a =>  (a.point, a)).toMap
+					aparts.map(a => (a.point, a)).toMap
 			}.
 			collectAsMap
 		

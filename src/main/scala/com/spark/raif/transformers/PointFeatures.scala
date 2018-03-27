@@ -1,3 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc Transform transaction to vector of features used models
+ * 	
+ *
+ */
+ 
 package com.spark.raif.transformers
 
 import org.apache.spark.rdd.RDD

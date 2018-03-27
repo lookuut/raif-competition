@@ -1,3 +1,13 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc Transform customer transaction points to Customer character points 
+ * 		 (points where was only current customer)
+ * 	
+ *
+ */
+ 
 package com.spark.raif.transformers
 
 

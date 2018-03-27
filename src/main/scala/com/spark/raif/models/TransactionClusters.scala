@@ -1,5 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc Transaction points clusters calculated by DBSCAN, used as categorical feature if need
+ * 	
+ *
+ */
 package com.spark.raif.models
-
 
 import com.esri.dbscan.DBSCAN2
 import com.esri.dbscan.DBSCANPoint
@@ -15,7 +22,7 @@ object TransactionClusters {
 	private val minPoint = 1
 	private val roundBase = 100
 
-	var clusters = scala.collection.Map[Point, Int]()
+	var clusters = Map[Point, Int]()
 	var clustersCount = 0
 
 	def clustering (transactions : RDD[Transaction], trainTransactions : RDD[TrainTransaction]) : Map[Point, Int] = {

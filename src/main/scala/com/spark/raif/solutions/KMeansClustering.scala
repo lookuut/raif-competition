@@ -1,3 +1,12 @@
+/**
+ *
+ *
+ * @author Lookuut Struchkov
+ * @desc KMeans Clustering to predict home and work point of the customer
+ * 	
+ *
+ */
+
 package com.spark.raif.solutions
 
 import org.apache.spark.sql.SparkSession
