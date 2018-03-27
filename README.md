@@ -2,7 +2,7 @@
 <p>Задача: используя координату, адрес, дату, код платежа, страну, город, валюту и id терминала 
 предсказать координаты места жительства и координаты работы клиента банка</p>
 <p>Цели участия - изучить язык программирования Scala, Apache Spark и алгоритмы машинного обучения</p>
-<p>Для решения задачи были применены алгоритмы от mllib DecisionTree, RandomForest, KMeans, 
+<p>Для решения задачи были применены алгоритмы от mllib GBTClassifier, RandomForestClassifier, DecisionTreeClassifier, KMeans, 
 DBSCAN. Также xgboost binary classification. Помимо алгоритмов машинного обучения, были применены технологии spark Pipeline, 
 CrossValidator</p>
 
